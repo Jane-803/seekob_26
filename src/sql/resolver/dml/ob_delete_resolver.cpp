@@ -209,7 +209,8 @@ int ObDeleteResolver::resolve_table_list(const ParseNode &table_list, bool &is_m
     CK(OB_NOT_NULL(table_node));
     if (OB_SUCC(ret)) {
       if (OB_FAIL(ObDMLResolver::resolve_table(*table_node, table_item))) {
-      } else if (table_item->is_function_table() || table_item->is_json_table()) { // invalid delete target
+      } else if (table_item->is_function_table() || table_item->is_file_table()
+                 || table_item->is_json_table()) { // invalid delete target
         ret = OB_WRONG_TABLE_NAME;
       } else if (OB_FAIL(column_namespace_checker_.add_reference_table(table_item))) {
       } else if (OB_FAIL(delete_stmt->add_from_item(table_item->table_id_,
@@ -369,7 +370,7 @@ int ObDeleteResolver::generate_delete_table_info(const TableItem &table_item)
       }
       if (OB_SUCC(ret)) {
         table_info->table_id_ = table_item.table_id_;
-        table_info->loc_table_id_ = base_table_item.table_id_;
+        table_info->target_table_ref_id_ = base_table_item.table_id_;
         table_info->ref_table_id_ = base_table_item.ref_id_;
         table_info->table_name_ = table_schema->get_table_name_str();
       }

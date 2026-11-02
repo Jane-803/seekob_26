@@ -16,7 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 
-#include "config_bridge.h"
+#include "rust/config.h"
 #include "share/config/ob_config_helper.h"
 #include "sql/resolver/cmd/ob_load_data_stmt.h"
 
@@ -6063,8 +6063,7 @@ int ObResolverUtils::check_secure_path(const common::ObString &secure_file_priv,
     MEMCPY(buf, secure_file_priv.ptr(), secure_file_priv.length());
 
     struct stat path_stat;
-    stat(buf, &path_stat);
-    if (0 == S_ISDIR(path_stat.st_mode)) {
+    if (0 != stat(buf, &path_stat) || 0 == S_ISDIR(path_stat.st_mode)) {
       ret = OB_ERR_NO_PRIVILEGE;
     } else {
       MEMSET(buf, 0, sizeof(buf));
@@ -6076,7 +6075,7 @@ int ObResolverUtils::check_secure_path(const common::ObString &secure_file_priv,
       ObCStringHelper helper;
       if (NULL == (real_secure_file = ::realpath(helper.convert(secure_file_priv), buf))) {
 #endif
-        // pass
+        ret = OB_ERR_NO_PRIVILEGE;
       } else {
         ObString secure_file_priv_tmp(real_secure_file);
         const int64_t pos = secure_file_priv_tmp.length();
@@ -6472,7 +6471,7 @@ int ObResolverUtils::resolve_file_format(const ParseNode *node,
                                          ObResolverParams &params)
 {
   int ret = OB_SUCCESS;
-  if (OB_ISNULL(node) || node->num_child_ != 1 || OB_ISNULL(node->children_[0]) ||
+  if (OB_ISNULL(node) || node->num_child_ < 1 || OB_ISNULL(node->children_[0]) ||
       OB_ISNULL(params.session_info_) || OB_ISNULL(params.expr_factory_)) {
     ret = OB_ERR_UNEXPECTED;
   } else {
@@ -6634,6 +6633,29 @@ int ObResolverUtils::resolve_file_format(const ParseNode *node,
       }
       case T_IGNORE_LAST_EMPTY_COLUMN: {
         format.csv_format_.ignore_last_empty_col_ = node->children_[0]->value_;
+        break;
+      }
+      case T_COPY_HEADER: {
+        const ObString option(node->children_[0]->str_len_, node->children_[0]->str_value_);
+        if (0 != option.case_compare("header")) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "unknown COPY option");
+        } else {
+          // Reuse the serialized CSV flag; for export it means emit a header.
+          format.csv_format_.parse_header_ = true;
+        }
+        break;
+      }
+      case T_COPY_NULLSTR: {
+        const ObString option(node->children_[0]->str_len_, node->children_[0]->str_value_);
+        if (0 != option.case_compare("nullstr") || OB_ISNULL(node->children_[1])) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "unknown COPY option");
+        } else if (OB_FAIL(format.csv_format_.null_if_.allocate_array(*params.allocator_, 1))) {
+        } else if (OB_FAIL(resolve_file_format_string_value(
+                     node->children_[1], format.csv_format_.cs_type_, params,
+                     format.csv_format_.null_if_.at(0)))) {
+        }
         break;
       }
       default: {

@@ -25,7 +25,6 @@
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "sql/rewrite/ob_transform_utils.h"
 #include "sql/resolver/cmd/ob_load_data_stmt.h"
-#include "sql/engine/expr/ob_expr_regexp_context.h"
 #include "sql/engine/expr/ob_json_param_type.h"
 #include "sql/parser/ob_parser_utils.h"
 
@@ -1533,11 +1532,6 @@ int ObSelectResolver::resolve_field_list(const ParseNode &node)
           } else if (T_FUN_SYS_OB_VERSION == name_expr->get_expr_type()) {
             if (OB_FAIL(ob_write_string(*allocator_, common::ObString(OB_COMPATIBILITY_VERSION), select_item.alias_name_))) {
             }
-          } else if (T_FUN_SYS_ICU_VERSION == name_expr->get_expr_type()) {
-            if (OB_FAIL(ob_write_string(*allocator_,
-                                        common::ObString(ObExprRegexContext::icu_version_string()),
-                                        select_item.alias_name_))) {
-            }
           } else {
             //invalid name, do nothing
           }
@@ -1650,6 +1644,19 @@ int ObSelectResolver::expand_target_list(
     }
   } else if (table_item.is_function_table()) {
     if (OB_FAIL(resolve_all_function_table_columns(table_item, &column_items))) {
+    }
+  } else if (table_item.is_file_table()) {
+    ObDMLStmt *stmt = get_stmt();
+    if (OB_ISNULL(stmt)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else {
+      for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_column_size(); ++i) {
+        const ColumnItem *column = stmt->get_column_item(i);
+        if (OB_NOT_NULL(column) && column->table_id_ == table_item.table_id_
+            && OB_FAIL(column_items.push_back(*column))) {
+          LOG_WARN("failed to append file table column", K(ret), K(i));
+        }
+      }
     }
   } else if (table_item.is_json_table()) {
     if (OB_FAIL(resolve_all_json_table_columns(table_item, &column_items))) {
@@ -3022,6 +3029,9 @@ int ObSelectResolver::resolve_into_outfile_with_format(const ParseNode *node, Ob
                                      ? ObCharset::get_default_collation(external_format.csv_format_.cs_type_)
                                      : ObCharset::get_system_collation();
       if (OB_FAIL(external_format.csv_format_.init_format(ObDataInFileStruct(), 0, file_cs_type))) {
+      } else if (INT64_MAX == external_format.csv_format_.field_enclosed_char_) {
+        external_format.csv_format_.field_enclosed_char_ = '"';
+        external_format.csv_format_.field_escaped_char_ = '"';
       }
     }
     for (int i = 0; OB_SUCC(ret) && i < format_node->num_child_; ++i) {
