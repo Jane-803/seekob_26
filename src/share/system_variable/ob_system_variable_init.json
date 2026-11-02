@@ -10982,11 +10982,24 @@
     "default_value": "0",
     "base_value": "0",
     "data_type": "bool",
-    "info": "Controls whether SQL can query local files with FILE_SCAN, FILE_LIST, and FILE_SCHEMA.",
-    "flags": "SESSION | GLOBAL | NEED_SERIALIZE | INFLUENCE_PLAN",
+    "info": "enable querying local CSV, JSONL and Parquet files as database tables",
+    "flags": "SESSION | NEED_SERIALIZE",
     "publish_version": "1.0.0.0",
-    "info_cn": "控制是否允许使用 FILE_SCAN、FILE_LIST 和 FILE_SCHEMA 访问本地文件",
-    "background_cn": "本地文件访问能力默认关闭，启用后仍受 secure_file_priv 限制",
+    "info_cn": "",
+    "background_cn": "",
+    "ref_url": ""
+  },
+  "ai_column_strict_read": {
+    "id": 10755,
+    "name": "ai_column_strict_read",
+    "default_value": "0",
+    "base_value": "0",
+    "data_type": "bool",
+    "info": "reject statements that read an AI column which still has unfinished rows",
+    "flags": "SESSION | NEED_SERIALIZE",
+    "publish_version": "1.0.0.0",
+    "info_cn": "",
+    "background_cn": "",
     "ref_url": ""
   }
 }
