@@ -146,6 +146,7 @@ int ObExprAIEmbed::eval_ai_embed_batch(const ObExpr &expr,
   ObDatumVector content_datums;
   ObDatumVector dim_datums;
   ObSEArray<int64_t, 16> row_indexes;
+  ObSEArray<ObString, 16> content_values;
   ObSEArray<ObString, 16> batch_results;
   ObEvalCtx::TempAllocGuard tmp_alloc_g(ctx);
   MultimodeAlloctor temp_allocator(tmp_alloc_g.get_allocator());
@@ -168,15 +169,22 @@ int ObExprAIEmbed::eval_ai_embed_batch(const ObExpr &expr,
                  || content_datums.at(i)->is_null()
                  || (expr.arg_cnt_ == 3 && dim_datums.at(i)->is_null())) {
         res_datums.at(i)->set_null();
-      } else if (model_datums.at(i)->get_string().empty()
-                 || content_datums.at(i)->get_string().empty()) {
-        ret = OB_INVALID_ARGUMENT;
-        LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id or input is empty");
       } else if (expr.arg_cnt_ == 3 && dim_datums.at(i)->get_int() <= 0) {
         ret = OB_INVALID_ARGUMENT;
         LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, dimension parameter must be a positive integer");
-      } else if (OB_FAIL(row_indexes.push_back(i))) {
-      } else if (OB_FAIL(batch_results.push_back(ObString()))) {
+      } else {
+        ObString content;
+        if (OB_FAIL(ObTextStringHelper::read_real_string_data(
+                ctx.exec_ctx_, temp_allocator, *content_datums.at(i),
+                expr.args_[CONTENT_IDX]->datum_meta_,
+                expr.args_[CONTENT_IDX]->obj_meta_.has_lob_header(), content))) {
+        } else if (model_datums.at(i)->get_string().empty() || content.empty()) {
+          ret = OB_INVALID_ARGUMENT;
+          LOG_USER_ERROR(OB_INVALID_ARGUMENT, "ai_embed, model id or input is empty");
+        } else if (OB_FAIL(row_indexes.push_back(i))) {
+        } else if (OB_FAIL(content_values.push_back(content))) {
+        } else if (OB_FAIL(batch_results.push_back(ObString()))) {
+        }
       }
     }
   }
@@ -200,7 +208,7 @@ int ObExprAIEmbed::eval_ai_embed_batch(const ObExpr &expr,
       if (batch_results.at(candidate).empty()
           && model_id == model_datums.at(row)->get_string()
           && dimension == row_dimension) {
-        if (OB_FAIL(contents.push_back(content_datums.at(row)->get_string()))) {
+        if (OB_FAIL(contents.push_back(content_values.at(candidate)))) {
         } else if (OB_FAIL(result_positions.push_back(candidate))) {
         }
       }

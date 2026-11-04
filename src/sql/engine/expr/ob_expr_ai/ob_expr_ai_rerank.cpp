@@ -20,6 +20,7 @@
 #include "share/rc/ob_server_runtime.h"
 #include "lib/utility/utility.h"
 #include "common/json_type/ob_json_common.h"
+#include <cmath>
  
 using namespace oceanbase::common;
 using namespace oceanbase::sql;
@@ -316,6 +317,8 @@ int ObExprAIRerank::sort_document_array_by_model_result(ObIAllocator &allocator,
         if (OB_ISNULL(index_node) || index_node->json_type() != ObJsonNodeType::J_INT
             || OB_ISNULL(score_node) || score_node->json_type() != ObJsonNodeType::J_DOUBLE) {
           ret = OB_INVALID_DATA;
+        } else if (!std::isfinite(static_cast<ObJsonDouble *>(score_node)->value())) {
+          ret = OB_INVALID_DATA;
         } else {
           ObJsonInt *index_value = static_cast<ObJsonInt *>(index_node);
           ObJsonDouble *score_value = static_cast<ObJsonDouble *>(score_node);
@@ -408,6 +411,8 @@ int ObExprAIRerank::batch_result_add_base(ObIAllocator &allocator, ObJsonArray *
       ObJsonNode *score_node = obj->get_value(SCORE_KEY);
       if (OB_ISNULL(index_node) || index_node->json_type() != ObJsonNodeType::J_INT
           || OB_ISNULL(score_node) || score_node->json_type() != ObJsonNodeType::J_DOUBLE) {
+        ret = OB_INVALID_DATA;
+      } else if (!std::isfinite(static_cast<ObJsonDouble *>(score_node)->value())) {
         ret = OB_INVALID_DATA;
       } else {
         ObJsonInt *int_obj = static_cast<ObJsonInt *>(index_node);
