@@ -216,9 +216,9 @@ int ObOpenAIUtils::ObOpenAIEmbed::get_body(common::ObIAllocator &allocator,
   return ret;
 }
 
-int ObOpenAIUtils::ObOpenAIEmbed::parse_output(common::ObIAllocator &allocator, 
+int ObOpenAIUtils::ObOpenAIEmbed::parse_output(common::ObIAllocator &allocator,
                                                common::ObJsonObject *http_response,
-                                               common::ObIJsonBase *&result) 
+                                               common::ObIJsonBase *&result)
 {
   int ret = OB_SUCCESS;
   if (OB_ISNULL(http_response)) {
@@ -232,22 +232,56 @@ int ObOpenAIUtils::ObOpenAIEmbed::parse_output(common::ObIAllocator &allocator,
       ret = OB_INVALID_DATA;
     } else {
       ObJsonArray *data_array = static_cast<ObJsonArray *>(data_node);
-      ObJsonNode *embedding_node = nullptr;
-      for (int64_t i = 0; OB_SUCC(ret) && i < data_array->element_count(); i++) {
-        if (OB_ISNULL(embedding_node = data_array->get_value(i))) {
-          ret = OB_INVALID_DATA;
-        } else if (embedding_node->json_type() != ObJsonNodeType::J_OBJECT) {
+      ObArray<ObJsonNode *> ordered_embeddings;
+      const int64_t count = data_array->element_count();
+
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; ++i) {
+        if (OB_FAIL(ordered_embeddings.push_back(nullptr))) {
+        }
+      }
+
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; ++i) {
+        ObJsonNode *item = data_array->get_value(i);
+        if (OB_ISNULL(item) || item->json_type() != ObJsonNodeType::J_OBJECT) {
           ret = OB_INVALID_DATA;
         } else {
-          ObJsonObject *embedding_obj = static_cast<ObJsonObject *>(embedding_node);
+          ObJsonObject *embedding_obj = static_cast<ObJsonObject *>(item);
           ObJsonNode *embedding = embedding_obj->get_value("embedding");
+          ObJsonNode *index_node = embedding_obj->get_value("index");
+          int64_t index = -1;
+
           if (OB_ISNULL(embedding) ||
-              embedding->json_type() != ObJsonNodeType::J_ARRAY) {
+              embedding->json_type() != ObJsonNodeType::J_ARRAY ||
+              OB_ISNULL(index_node)) {
             ret = OB_INVALID_DATA;
-          } else if (OB_FAIL(result_array->append(embedding))) {
+          } else {
+            if (index_node->json_type() == ObJsonNodeType::J_INT) {
+              index = static_cast<ObJsonInt *>(index_node)->get_int();
+            } else if (index_node->json_type() == ObJsonNodeType::J_UINT) {
+              uint64_t unsigned_index =
+                  static_cast<ObJsonUint *>(index_node)->get_uint();
+              if (unsigned_index < static_cast<uint64_t>(count)) {
+                index = static_cast<int64_t>(unsigned_index);
+              }
+            }
+
+            if (index < 0 || index >= count ||
+                OB_NOT_NULL(ordered_embeddings.at(index))) {
+              ret = OB_INVALID_DATA;
+            } else {
+              ordered_embeddings.at(index) = embedding;
+            }
           }
         }
       }
+
+      for (int64_t i = 0; OB_SUCC(ret) && i < count; ++i) {
+        if (OB_ISNULL(ordered_embeddings.at(i))) {
+          ret = OB_INVALID_DATA;
+        } else if (OB_FAIL(result_array->append(ordered_embeddings.at(i)))) {
+        }
+      }
+
       if (OB_SUCC(ret)) {
         result = result_array;
       }
