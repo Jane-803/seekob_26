@@ -17,7 +17,11 @@
 #define USING_LOG_PREFIX LIB
 
 #include "ob_vsag_adaptor.h"
+#include "hipvs_hnsw_builder.h"
+#include <chrono>
+#include <cstring>
 #include <map>
+#include <sstream>
 #include "vsag/vsag.h"
 #include "vsag/errors.h"
 #include "vsag/dataset.h"
@@ -233,6 +237,51 @@ int HnswIndexHandler::build_index(const vsag::DatasetPtr &base)
   }
   return ret;
 }
+
+#ifdef OB_USE_HIPVS
+static int build_index_with_hipvs(HnswIndexHandler *handler,
+                                  const vsag::DatasetPtr &base,
+                                  const float *vectors,
+                                  const int64_t *ids,
+                                  int64_t rows,
+                                  int64_t dim)
+{
+  int ret = OB_SUCCESS;
+  HipvsBuildStats stats;
+  std::stringstream cache(std::ios::in | std::ios::out | std::ios::binary);
+  std::vector<std::string> source_ids;
+  source_ids.reserve(rows);
+  for (int64_t i = 0; i < rows; ++i) {
+    source_ids.emplace_back(std::to_string(ids[i]));
+  }
+  base->SourceID(source_ids.data());
+
+  if (HipvsHnswBuilder::build_cache(vectors, ids, rows, dim,
+                                    handler->get_max_degree(), cache, stats) != 0) {
+    LOG_WARN("[OBVSAG] hipVS graph build failed, falling back to CPU",
+             K(stats.fallback_reason_), K(rows), K(dim));
+    ret = HipvsHnswBuilder::is_forced() ? OB_ERR_UNEXPECTED : handler->build_index(base);
+  } else {
+    cache.seekg(0);
+    auto imported = handler->get_index()->ImportCache(cache);
+    if (!imported.has_value()) {
+      LOG_WARN("[OBVSAG] VSAG rejected hipVS build cache, falling back to CPU",
+               K(imported.error().message));
+      ret = HipvsHnswBuilder::is_forced() ? vsag_errcode2ob(imported.error().type)
+                                         : handler->build_index(base);
+    } else {
+      const auto vsag_start = std::chrono::steady_clock::now();
+      ret = handler->build_index(base);
+      const int64_t vsag_build_us = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - vsag_start).count();
+      LOG_INFO("[OBVSAG] HNSW graph initialized with hipVS",
+               K(rows), K(dim), K(stats.gpu_build_us_), K(stats.graph_copy_us_),
+               K(vsag_build_us), K(ret));
+    }
+  }
+  return ret;
+}
+#endif
 
 int HnswIndexHandler::get_index_number()
 {
@@ -974,8 +1023,30 @@ int build_index(VectorIndexPtr &index_handler, float *vector_list,
     if (extra_infos != nullptr) {
       dataset->ExtraInfos(extra_infos);
     }
+#ifdef OB_USE_HIPVS
+    const bool supported = (hnsw->get_index_type() == HNSW_TYPE ||
+                            hnsw->get_index_type() == HGRAPH_TYPE) &&
+                           std::strcmp(hnsw->get_dtype(), "float32") == 0 &&
+                           std::strcmp(hnsw->get_metric(), "l2") == 0;
+    if (supported && HipvsHnswBuilder::should_attempt(size)) {
+      if (OB_FAIL(build_index_with_hipvs(hnsw, dataset, vector_list, ids, size, dim))) {
+      }
+    } else {
+      const auto cpu_build_start = std::chrono::steady_clock::now();
+      if (OB_FAIL(hnsw->build_index(dataset))) {
+      }
+      const int64_t cpu_build_us = std::chrono::duration_cast<std::chrono::microseconds>(
+          std::chrono::steady_clock::now() - cpu_build_start).count();
+      LOG_INFO("[OBVSAG] HNSW index built with CPU", K(size), K(dim), K(cpu_build_us), K(ret));
+    }
+#else
+    const auto cpu_build_start = std::chrono::steady_clock::now();
     if (OB_FAIL(hnsw->build_index(dataset))) {
     }
+    const int64_t cpu_build_us = std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - cpu_build_start).count();
+    LOG_INFO("[OBVSAG] HNSW index built with CPU", K(size), K(dim), K(cpu_build_us), K(ret));
+#endif
   }
   return ret;
 }
