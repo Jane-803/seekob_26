@@ -2705,6 +2705,13 @@ int ObDMLResolver::resolve_table(const ParseNode &parse_tree,
         OZ (resolve_json_table_item(*table_node, table_item));
         break;
       }
+      case T_FILE_SQL_EXPRESSION: {
+        if (OB_ISNULL(session_info_)) {
+          ret = OB_INVALID_ARGUMENT;
+        } else if (OB_FAIL(resolve_file_sql_item(*table_node, table_item))) {
+        }
+        break;
+      }
       case T_UNNEST_EXPRESSION: {
         if (OB_ISNULL(session_info_)) {
           ret = OB_INVALID_ARGUMENT;
@@ -3494,6 +3501,14 @@ int ObDMLResolver::resolve_str_const(const ParseNode &parse_tree, ObString& path
     path_str.assign_ptr(buf, val.get_string().length());
   }
   return ret;
+}
+
+int ObDMLResolver::resolve_file_sql_item(
+    const ParseNode &table_node, TableItem *&table_item)
+{
+  (void)table_node;
+  table_item = NULL;
+  return OB_NOT_SUPPORTED;
 }
 
 int ObDMLResolver::resolve_unnest_item(const ParseNode &parse_tree, TableItem *&tbl_item)
