@@ -74,23 +74,23 @@ void ObStopWordChecker::destroy()
 int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
 {
   int ret = OB_SUCCESS;
-  
-  
-  common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
   if (OB_UNLIKELY(!inited_)) {
     ret = OB_NOT_INIT;
   } else if (OB_UNLIKELY(word.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    common::ObString cmp_str;
-    // do nothing set out with in if type is the same.
-    if (OB_FAIL(common::ObCharset::charset_convert(
-                                       allocator,
-                                       word.get_word().get_string(),
-                                       word.get_collation_type(),
-                                       stopword_type_.get_collation_type(),
-                                       cmp_str))) {
-    } else {
+    common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
+    common::ObString cmp_str = word.get_word().get_string();
+    const ObCollationType src_type = word.get_collation_type();
+    const ObCollationType dst_type = stopword_type_.get_collation_type();
+    if (OB_UNLIKELY(!ObCharset::is_valid_collation(src_type) || !ObCharset::is_valid_collation(dst_type))) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (ObCharset::charset_type_by_coll(src_type) != ObCharset::charset_type_by_coll(dst_type)) {
+      if (OB_FAIL(common::ObCharset::charset_convert(allocator, cmp_str, src_type, dst_type, cmp_str))) {
+        return ret;
+      }
+    }
+    if (OB_SUCC(ret)) {
       ObFTWord converted(cmp_str.length(), cmp_str.ptr(), stopword_type_);
       ret = stopword_set_.exist_refactored(converted);
       if (OB_HASH_NOT_EXIST == ret) {
@@ -198,20 +198,18 @@ int ObAddWord::check_stopword(const ObFTWord &ft_word, bool &is_stopword)
 int ObAddWord::groupby_word(const ObFTWord &word, const int64_t word_freq)
 {
   int ret = OB_SUCCESS;
-  int64_t word_count = 0;
   if (OB_UNLIKELY(word.empty() || word_freq <= 0)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (!flag_.groupby_word()) {
     if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
     }
-  } else if (OB_FAIL(word_map_.get_refactored(word, word_count)) && OB_HASH_NOT_EXIST != ret) {
   } else {
-    if (OB_HASH_NOT_EXIST == ret) {
-      word_count = 1;
+    int64_t *word_count = word_map_.get(word);
+    if (nullptr == word_count) {
+      if (OB_FAIL(word_map_.set_refactored(word, 1/*word count*/))) {
+      }
     } else {
-      word_count += word_freq;
-    }
-    if (OB_FAIL(word_map_.set_refactored(word, word_count, 1/*overwrite*/))) {
+      *word_count += word_freq;
     }
   }
   return ret;
