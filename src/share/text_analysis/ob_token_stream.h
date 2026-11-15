@@ -81,6 +81,7 @@ private:
 private:
   const char *curr_token_ptr_;
   int64_t trav_pos_;
+  bool utf8_charset_;
 };
 
 class ObTokenNormalizer : public ObITokenStream
@@ -131,7 +132,9 @@ public:
   virtual void reuse() override;
   virtual int get_next(ObDatum &next_token, int64_t &token_freq) override;
 private:
+  virtual int inner_init(const ObCharsetInfo *cs, ObITokenStream &in_stream) override;
   ObArenaAllocator norm_allocator_;
+  bool utf8_charset_;
 };
 
 // group (deduplicate) and count

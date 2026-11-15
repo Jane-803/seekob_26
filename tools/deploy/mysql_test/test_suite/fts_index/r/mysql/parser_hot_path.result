@@ -1,0 +1,61 @@
+drop database if exists fts_parser_hot_path;
+create database fts_parser_hot_path;
+use fts_parser_hot_path;
+result_format: 4
+select json_length(tokenize('lower lower lower', 'beng')) = 1 as repeated_lower,
+       json_contains(tokenize('lower lower lower', 'beng'), '"lower"') as lower_present;
++----------------+---------------+
+| repeated_lower | lower_present |
++----------------+---------------+
+|              1 |             1 |
++----------------+---------------+
+select json_length(tokenize('LOWER Mixed CASE', 'beng')) = 3 as mixed_case_count,
+       json_contains(tokenize('LOWER Mixed CASE', 'beng'), '"lower"') as lower_casefold,
+       json_contains(tokenize('LOWER Mixed CASE', 'beng'), '"mixed"') as mixed_casefold,
+       json_contains(tokenize('LOWER Mixed CASE', 'beng'), '"case"') as upper_casefold;
++------------------+----------------+----------------+----------------+
+| mixed_case_count | lower_casefold | mixed_casefold | upper_casefold |
++------------------+----------------+----------------+----------------+
+|                1 |              1 |              1 |              1 |
++------------------+----------------+----------------+----------------+
+select json_length(tokenize('hello,世界 mixed123', 'beng')) = 3 as unicode_count,
+       json_contains(tokenize('hello,世界 mixed123', 'beng'), '"世界"') as unicode_present;
++---------------+-----------------+
+| unicode_count | unicode_present |
++---------------+-----------------+
+|             1 |               1 |
++---------------+-----------------+
+select json_length(tokenize('OceanBase数据库 全文索引', 'ik')) = 3 as ik_count,
+       json_contains(tokenize('OceanBase数据库 全文索引', 'ik'), '"数据库"') as ik_last_word;
++----------+--------------+
+| ik_count | ik_last_word |
++----------+--------------+
+|        1 |            1 |
++----------+--------------+
+
+create table docs_ik (id int primary key, body text, fulltext index ft(body) with parser ik);
+insert into docs_ik values (1, 'OceanBase数据库 全文索引'), (2, '中文分词测试'), (3, '无关内容');
+select id from docs_ik where match(body) against('数据库') order by id;
++----+
+| id |
++----+
+|  1 |
++----+
+
+create table docs_beng (id int primary key, body text, fulltext index ft(body) with parser beng);
+insert into docs_beng values (1, 'lower lower lower'), (2, 'LOWER Mixed CASE'), (3, 'hello,世界 mixed123');
+select id from docs_beng where match(body) against('lower') order by id;
++----+
+| id |
++----+
+|  1 |
+|  2 |
++----+
+select id from docs_beng where match(body) against('mixed123') order by id;
++----+
+| id |
++----+
+|  3 |
++----+
+
+drop database fts_parser_hot_path;
