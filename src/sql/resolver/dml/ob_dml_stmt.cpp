@@ -165,6 +165,7 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   int ret = OB_SUCCESS;
   table_id_ = other.table_id_;
   table_name_ = other.table_name_;
+  file_sql_path_ = other.file_sql_path_;
   alias_name_ = other.alias_name_;
   qb_name_ = other.qb_name_;
   type_ = other.type_;
@@ -1464,19 +1465,25 @@ int ObDMLStmt::formalize_stmt(ObSQLSessionInfo *session_info, bool need_deduce_t
 {
   int ret = OB_SUCCESS;
   ObArray<ObSelectStmt*> view_stmts;
+  LOG_INFO("FILE_SQL_TRACE stmt entry", KP(session_info), K(column_items_.count()));
   if (OB_ISNULL(session_info)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(formalize_relation_exprs(session_info, need_deduce_type))) {
+    LOG_WARN("FILE_SQL_FORMALIZE relation_exprs failed", K(ret));
   } else if (OB_FAIL(get_from_subquery_stmts(view_stmts))) {
+    LOG_WARN("FILE_SQL_FORMALIZE get_from_subquery_stmts failed", K(ret));
   } else {
+    LOG_INFO("FILE_SQL_FORMALIZE subquery count", K(ret), K(view_stmts.count()));
     for (int64_t i = 0; OB_SUCC(ret) && i < view_stmts.count(); ++i) {
       ObSelectStmt *view_stmt = view_stmts.at(i);
       if (OB_ISNULL(view_stmt)) {
         ret = OB_ERR_UNEXPECTED;
       } else if (OB_FAIL(SMART_CALL(view_stmt->formalize_stmt(session_info, need_deduce_type)))) {
+        LOG_WARN("FILE_SQL_FORMALIZE recursive subquery failed", K(ret), K(i));
       }
     }
   }
+  LOG_INFO("FILE_SQL_TRACE stmt exit", K(ret));
   return ret;
 }
 
@@ -1487,7 +1494,9 @@ int ObDMLStmt::formalize_relation_exprs(ObSQLSessionInfo *session_info, bool nee
   ObSEArray<ObRawExpr *, 4> relation_exprs;
   if (OB_ISNULL(session_info) || OB_ISNULL(get_query_ctx())) {
     ret = OB_ERR_UNEXPECTED;
+    LOG_INFO("FILE_SQL_FORMALIZE invalid context", K(ret));
   } else if (OB_FAIL(get_relation_exprs(relation_exprs))) {
+    LOG_INFO("FILE_SQL_FORMALIZE get_relation_exprs failed", K(ret));
   } else {
     // rel id maintenance of dependent exprs
     subquery_exprs_.reset();
@@ -1495,6 +1504,7 @@ int ObDMLStmt::formalize_relation_exprs(ObSQLSessionInfo *session_info, bool nee
       ObColumnRefRawExpr *column_expr = NULL;
       if (OB_ISNULL(column_expr = column_items_.at(i).expr_)) {
         ret = OB_ERR_UNEXPECTED;
+        LOG_INFO("FILE_SQL_FORMALIZE null column expr", K(ret), K(i));
       } else if (column_expr->is_virtual_generated_column() && 
                  (!column_expr->is_fulltext_column() &&
                   !column_expr->is_multivalue_generated_column() &&
@@ -1503,9 +1513,13 @@ int ObDMLStmt::formalize_relation_exprs(ObSQLSessionInfo *session_info, bool nee
                                     column_expr)->get_dependant_expr();
         if (dependant_expr == nullptr) {
           ret = OB_ERR_UNEXPECTED;
+          LOG_INFO("FILE_SQL_FORMALIZE null dependant expr", K(ret), K(i));
         } else if (OB_FAIL(dependant_expr->formalize(session_info, false, need_deduce_type))) {
+          LOG_INFO("FILE_SQL_FORMALIZE dependant formalize failed", K(ret), K(i));
         } else if (OB_FAIL(dependant_expr->pull_relation_id())) {
+          LOG_INFO("FILE_SQL_FORMALIZE dependant pull_relation_id failed", K(ret), K(i));
         } else if (OB_FAIL(dependant_expr->extract_info())) {
+          LOG_INFO("FILE_SQL_FORMALIZE dependant extract_info failed", K(ret), K(i));
         }
       }
     }
@@ -1513,13 +1527,23 @@ int ObDMLStmt::formalize_relation_exprs(ObSQLSessionInfo *session_info, bool nee
       ObRawExpr *expr = relation_exprs.at(i);
       if (OB_ISNULL(expr)) {
         ret = OB_ERR_UNEXPECTED;
+        LOG_INFO("FILE_SQL_FORMALIZE null relation expr", K(ret), K(i));
       } else if (OB_FAIL(expr->formalize(session_info, false, need_deduce_type))) {
+        LOG_INFO("FILE_SQL_FORMALIZE expr formalize failed", K(ret), K(i), KP(expr));
       } else if (OB_FAIL(expr->pull_relation_id())) {
+        LOG_INFO("FILE_SQL_FORMALIZE pull_relation_id failed", K(ret), K(i), KP(expr));
       } else if (OB_FAIL(expr->extract_info())) {
+        LOG_INFO("FILE_SQL_FORMALIZE extract_info failed", K(ret), K(i), KP(expr));
       } else if (OB_FAIL(ObTransformUtils::extract_query_ref_expr(expr, subquery_exprs_, true))) {
+        LOG_INFO("FILE_SQL_FORMALIZE extract_query_ref_expr failed", K(ret), K(i), KP(expr));
       }
     }
   }
+  if (OB_SUCCESS != ret) {
+    LOG_INFO("FILE_SQL_FORMALIZE relation_exprs exit",
+             K(ret), K(column_items_.count()), K(relation_exprs.count()));
+  }
+  LOG_INFO("FILE_SQL_TRACE relation exit", K(ret), K(column_items_.count()), K(relation_exprs.count()));
   return ret;
 }
 
@@ -1558,7 +1582,8 @@ int ObDMLStmt::formalize_stmt_expr_reference(ObRawExprFactory *expr_factory,
       } else if (table_item->is_function_table() ||
                  table_item->is_json_table() ||
                  table_item->for_update_ ||
-                 table_item->is_values_table()) {
+                 table_item->is_values_table() ||
+                 table_item->is_file_sql_table()) {
         if (OB_FAIL(set_sharable_expr_reference(*column_item.expr_, ExplicitedRefType::REF_BY_NORMAL))) {
         } else if (table_item->is_json_table()) {
           if (NULL != column_item.default_value_expr_ 

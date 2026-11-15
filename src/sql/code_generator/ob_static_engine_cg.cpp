@@ -18,6 +18,8 @@
 
 #include "config_bridge.h"
 #include "ob_static_engine_cg.h"
+#include "sql/optimizer/ob_log_file_sql_access.h"
+#include "sql/engine/basic/ob_file_sql_access_op.h"
 #include "sql/optimizer/ob_log_group_by.h"
 #include "sql/optimizer/ob_log_sort.h"
 #include "sql/optimizer/ob_log_limit.h"
@@ -1676,6 +1678,50 @@ int ObStaticEngineCG::generate_spec(ObLogExprValues &op,
       // expr values
       if (OB_FAIL(mark_expr_self_produced(op.get_output_exprs()))) {
       }
+    }
+  }
+
+  return ret;
+}
+
+int ObStaticEngineCG::generate_spec(
+    ObLogFileSqlAccess &op,
+    ObFileSqlAccessSpec &spec,
+    const bool in_root_job)
+{
+  int ret = OB_SUCCESS;
+  UNUSED(in_root_job);
+
+  if (OB_ISNULL(phy_plan_) ||
+      op.get_file_path().empty() ||
+      op.get_column_exprs().empty()) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(ob_write_string(
+                 phy_plan_->get_allocator(),
+                 op.get_file_path(),
+                 spec.file_path_))) {
+  } else if (OB_FAIL(spec.column_exprs_.prepare_allocate(
+                 op.get_column_exprs().count()))) {
+  } else {
+    for (int64_t i = 0;
+         OB_SUCC(ret) && i < op.get_column_exprs().count();
+         ++i) {
+      ObColumnRefRawExpr *col_expr = op.get_column_exprs().at(i);
+      ObExpr *expr = NULL;
+
+      if (OB_ISNULL(col_expr)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(mark_expr_self_produced(col_expr))) {
+      } else if (OB_FAIL(generate_rt_expr(*col_expr, expr))) {
+      } else if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        spec.column_exprs_.at(i) = expr;
+      }
+    }
+
+    if (OB_SUCC(ret)) {
+      ret = mark_expr_self_produced(op.get_output_exprs());
     }
   }
 
@@ -6149,6 +6195,10 @@ int ObStaticEngineCG::get_phy_op_type(ObLogicalOperator &log_op,
     }
     case log_op_def::LOG_VALUES_TABLE_ACCESS: {
       type = PHY_VALUES_TABLE_ACCESS;
+      break;
+    }
+    case log_op_def::LOG_FILE_SQL_ACCESS: {
+      type = PHY_FILE_SQL_ACCESS;
       break;
     }
     case log_op_def::LOG_EXPAND: {

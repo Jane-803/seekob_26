@@ -422,13 +422,17 @@ int ObRawExpr::formalize(const ObSQLSessionInfo *session_info,
   int ret = OB_SUCCESS;
   bool is_stack_overflow = false;
   if (OB_FAIL(check_stack_overflow(is_stack_overflow))) {
+    LOG_INFO("FILE_SQL_EXPR stack check failed", K(ret), K(get_expr_type()));
   } else if (is_stack_overflow) {
     ret = OB_SIZE_OVERFLOW;
   } else if (OB_FAIL(extract_info())) {
+    LOG_INFO("FILE_SQL_EXPR extract_info failed", K(ret), K(get_expr_type()));
   } else if (need_deduce_type &&
              OB_FAIL(deduce_type(session_info, solidify_session_vars, local_vars, local_var_id))) {
+    LOG_INFO("FILE_SQL_EXPR deduce_type failed", K(ret), K(get_expr_type()));
     LOG_WARN("failed to deduce type", K(*this));
   } else if (OB_FAIL(calc_hash())) {
+    LOG_INFO("FILE_SQL_EXPR calc_hash failed", K(ret), K(get_expr_type()));
   } else {}
   return ret;
 }

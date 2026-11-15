@@ -16,6 +16,10 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "config_bridge.h"
+#include <limits.h>
+#include <stdlib.h>
+#include "sql/resolver/ob_resolver_utils.h"
+#include "sql/engine/basic/ob_file_sql_csv_schema.h"
 #include "ob_dml_resolver.h"
 #include "sql/resolver/dml/ob_view_table_resolver.h"
 #include "sql/optimizer/ob_optimizer_util.h"
@@ -3090,11 +3094,12 @@ int ObDMLResolver::resolve_single_table_column_item(const TableItem &table_item,
   } else if (table_item.is_json_table()) {
     if (OB_FAIL(resolve_json_table_column_item(table_item, column_name, col_item))) {
     }
-  } else if (table_item.is_values_table()) {
+  } else if (table_item.is_values_table() || table_item.is_file_sql_table()) {
     if (OB_ISNULL(col_item = stmt->get_column_item(table_item.table_id_, column_name))) {
       ret = OB_ERR_BAD_FIELD_ERROR;
     }
   }
+  LOG_INFO("FILE_SQL_DIAG resolve_column", K(ret), K(column_name), K(table_item.table_id_), KP(col_item));
   return ret;
 }
 
@@ -3494,8 +3499,14 @@ int ObDMLResolver::resolve_str_const(const ParseNode &parse_tree, ObString& path
                                              enable_mysql_compatible_dates,
                                              session_info->get_min_const_integer_precision(),
                                              nullptr != params_.secondary_namespace_))) {
+  } else if (val.get_string().length() <= 0) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("CSV path constant resolved to empty string",
+             K(ret), K(val), K(parse_tree.type_), K(parse_tree.str_len_));
   } else if (OB_ISNULL(buf = static_cast<char*>(allocator_->alloc(val.get_string().length())))) { // deep copy str value
     ret = common::OB_ALLOCATE_MEMORY_FAILED;
+    LOG_WARN("failed to allocate memory for CSV path",
+             K(ret), K(val.get_string().length()));
   } else {
     MEMCPY(buf, val.get_string().ptr(), val.get_string().length());
     path_str.assign_ptr(buf, val.get_string().length());
@@ -3506,9 +3517,203 @@ int ObDMLResolver::resolve_str_const(const ParseNode &parse_tree, ObString& path
 int ObDMLResolver::resolve_file_sql_item(
     const ParseNode &table_node, TableItem *&table_item)
 {
-  (void)table_node;
+  int ret = OB_SUCCESS;
+  const ParseNode *args_node = NULL;
+  const ParseNode *path_node = NULL;
+  ObString file_path;
+  bool enable_file_sql = false;
   table_item = NULL;
-  return OB_NOT_SUPPORTED;
+
+  if (T_FILE_SQL_EXPRESSION != table_node.type_ || 3 != table_node.num_child_) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("invalid file SQL parse node", K(ret), K(table_node.type_));
+  } else if (OB_ISNULL(session_info_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("file SQL session is null", K(ret));
+  } else if (OB_FAIL(session_info_->get_sys_variable(
+                 share::SYS_VAR_ENABLE_FILE_SQL, enable_file_sql))) {
+    LOG_WARN("failed to read enable_file_sql", K(ret));
+  } else if (!enable_file_sql) {
+    ret = OB_NOT_SUPPORTED;
+    LOG_WARN("read_csv requires enable_file_sql to be enabled", K(ret));
+  } else if (OB_ISNULL(args_node = table_node.children_[0])
+             || T_EXPR_LIST != args_node->type_
+             || 1 != args_node->num_child_
+             || OB_ISNULL(args_node->children_[0])) {
+    ret = OB_INVALID_ARGUMENT;
+    LOG_WARN("read_csv requires exactly one file path argument", K(ret));
+  } else if (OB_ISNULL(allocator_)) {
+    ret = OB_ERR_UNEXPECTED;
+    LOG_WARN("CSV path allocator is null", K(ret));
+  } else {
+    path_node = args_node->children_[0];
+    if (T_QUESTIONMARK == path_node->type_) {
+      const int64_t idx = path_node->value_;
+      if (OB_ISNULL(params_.param_list_) || idx < 0 ||
+          idx >= params_.param_list_->count() ||
+          !params_.param_list_->at(idx).is_string_type() ||
+          params_.param_list_->at(idx).get_string().empty()) {
+        ret = OB_INVALID_ARGUMENT;
+      } else if (OB_FAIL(ob_write_string(
+                     *allocator_, params_.param_list_->at(idx).get_string(),
+                     file_path))) {
+        LOG_WARN("failed to copy CSV path parameter", K(ret));
+      }
+    } else if ((T_VARCHAR != path_node->type_ && T_CHAR != path_node->type_) ||
+               OB_ISNULL(path_node->str_value_) || path_node->str_len_ <= 0) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (OB_FAIL(ob_write_string(
+                   *allocator_, ObString(path_node->str_len_,
+                                         path_node->str_value_), file_path))) {
+      LOG_WARN("failed to copy CSV path literal", K(ret));
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ObString cstyle_path;
+    ObString secure_file_priv;
+    char full_path_buf[PATH_MAX];
+
+    if (OB_FAIL(ob_write_string(*allocator_, file_path, cstyle_path, true))) {
+      LOG_WARN("failed to copy CSV file path", K(ret));
+    } else if (OB_ISNULL(::realpath(cstyle_path.ptr(), full_path_buf))) {
+      ret = OB_FILE_NOT_EXIST;
+      LOG_WARN("failed to resolve CSV file path", K(ret), K(file_path));
+    } else if (OB_FAIL(session_info_->get_secure_file_priv(secure_file_priv))) {
+      LOG_WARN("failed to get secure_file_priv", K(ret));
+    } else if (OB_FAIL(ObResolverUtils::check_secure_path(
+                   secure_file_priv, ObString(full_path_buf)))) {
+      LOG_WARN("CSV file path is not allowed", K(ret), K(file_path));
+    } else {
+      std::vector<std::string> csv_columns;
+      std::vector<ObFileSqlType> csv_types;
+      if (0 != infer_file_sql_csv_schema(full_path_buf, csv_columns, csv_types)) {
+        ret = OB_ERR_UNEXPECTED;
+        LOG_WARN("failed to infer CSV schema", K(ret), K(file_path));
+      } else {
+        ObDMLStmt *stmt = get_stmt();
+        TableItem *new_item = NULL;
+        ObString saved_path;
+        ObString alias_name("read_csv");
+        const ParseNode *alias_node = table_node.children_[1];
+
+        if (OB_ISNULL(stmt) || OB_ISNULL(allocator_) || OB_ISNULL(session_info_)) {
+          ret = OB_ERR_UNEXPECTED;
+          LOG_WARN("invalid file SQL resolver context", K(ret));
+        } else if (NULL != alias_node) {
+          if (OB_ISNULL(alias_node->str_value_) || alias_node->str_len_ <= 0) {
+            ret = OB_INVALID_ARGUMENT;
+            LOG_WARN("invalid CSV table alias", K(ret));
+          } else {
+            alias_name.assign_ptr(alias_node->str_value_, alias_node->str_len_);
+          }
+        }
+
+        if (OB_SUCC(ret)) {
+          if (OB_FAIL(ob_write_string(
+                  *allocator_, ObString(full_path_buf), saved_path, true))) {
+            LOG_WARN("failed to save CSV file path", K(ret));
+          } else if (OB_ISNULL(new_item = stmt->create_table_item(*allocator_))) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+            LOG_WARN("failed to create CSV table item", K(ret));
+          } else {
+            new_item->table_id_ = generate_table_id();
+            new_item->table_name_ = alias_name;
+            new_item->alias_name_ = alias_name;
+            new_item->type_ = TableItem::FILE_SQL_TABLE;
+            new_item->file_sql_path_ = saved_path;
+            new_item->is_view_table_ = false;
+
+            if (OB_FAIL(stmt->add_table_item(session_info_, new_item))) {
+              LOG_WARN("failed to register CSV table item", K(ret));
+            } else {
+              ObCollationType collation = CS_TYPE_INVALID;
+              if (OB_FAIL(session_info_->get_collation_connection(collation))) {
+                LOG_WARN("failed to get CSV column collation", K(ret));
+              }
+
+              for (size_t i = 0; OB_SUCC(ret) && i < csv_columns.size(); ++i) {
+                ObRawExprResType col_type;
+                switch (csv_types[i]) {
+                  case ObFileSqlType::BOOLEAN:
+                    col_type.set_type(ObTinyIntType);
+                    break;
+                  case ObFileSqlType::INTEGER:
+                    col_type.set_type(ObIntType);
+                    break;
+                  case ObFileSqlType::DOUBLE:
+                    col_type.set_type(ObDoubleType);
+                    break;
+                  case ObFileSqlType::DATE:
+                    col_type.set_type(ObDateType);
+                    break;
+                  case ObFileSqlType::DATETIME:
+                    col_type.set_type(ObDateTimeType);
+                    break;
+                  default:
+                    col_type.set_type(ObVarcharType);
+                    col_type.set_collation_type(collation);
+                    col_type.set_collation_level(CS_LEVEL_IMPLICIT);
+                    col_type.set_length(65535);
+                    break;
+                }
+
+                ObColumnRefRawExpr *col_expr = NULL;
+                ObString col_name;
+                const std::string &name = csv_columns[i];
+                ObString source_name(
+                    static_cast<int32_t>(name.size()),
+                    const_cast<char *>(name.c_str()));
+
+                if (OB_FAIL(ob_write_string(
+                        *allocator_, source_name, col_name, true))) {
+                  LOG_WARN("failed to copy CSV column name", K(ret));
+                } else if (OB_FAIL(params_.expr_factory_->create_raw_expr(
+                               T_REF_COLUMN, col_expr))) {
+                  LOG_WARN("failed to create CSV column expression", K(ret));
+                } else if (OB_ISNULL(col_expr)) {
+                  ret = OB_ERR_UNEXPECTED;
+                } else {
+                  col_expr->set_result_type(col_type);
+                  col_expr->set_ref_id(
+                      new_item->table_id_, i + OB_APP_MIN_COLUMN_ID);
+                  col_expr->set_column_attr(new_item->table_name_, col_name);
+
+                  if (OB_FAIL(col_expr->add_flag(IS_COLUMN))) {
+                    LOG_WARN("failed to mark CSV column", K(ret));
+                  } else {
+                    ColumnItem col_item;
+                    col_item.expr_ = col_expr;
+                    col_item.table_id_ = col_expr->get_table_id();
+                    col_item.column_id_ = col_expr->get_column_id();
+                    col_item.column_name_ = col_expr->get_column_name();
+
+                    if (OB_FAIL(stmt->add_column_item(col_item))) {
+                      LOG_WARN("failed to register CSV column", K(ret));
+                    }
+                  }
+                }
+              }
+
+              if (OB_SUCC(ret)) {
+                table_item = new_item;
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // The path determines both the schema and the scan source.  A cached plan
+  // built for another parameter value would read the wrong file.
+  if (OB_SUCC(ret) && OB_NOT_NULL(table_item) &&
+      OB_NOT_NULL(get_stmt()) && OB_NOT_NULL(get_stmt()->get_query_ctx())) {
+    ObQueryHint &query_hint = get_stmt()->get_query_ctx()->get_query_hint_for_update();
+    ObGlobalHint &global_hint = const_cast<ObGlobalHint&>(query_hint.get_global_hint());
+    global_hint.merge_plan_cache_hint(OB_USE_PLAN_CACHE_NONE);
+  }
+
+  return ret;
 }
 
 int ObDMLResolver::resolve_unnest_item(const ParseNode &parse_tree, TableItem *&tbl_item)

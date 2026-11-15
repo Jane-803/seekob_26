@@ -119,6 +119,8 @@ struct ObDASScanCtDef;
 struct InsertAllTableInfo;
 class ObLogValuesTableAccess;
 class ObValuesTableAccessSpec;
+class ObLogFileSqlAccess;
+class ObFileSqlAccessSpec;
 class ObLogExpand;
 class ObExpandVecSpec;
 class ObHashRollupInfo;
@@ -317,6 +319,7 @@ private:
 
   int generate_spec(ObLogExprValues &op, ObExprValuesSpec &spec, const bool in_root_job);
   int generate_spec(ObLogValuesTableAccess &op, ObValuesTableAccessSpec &spec, const bool in_root_job);
+  int generate_spec(ObLogFileSqlAccess &op, ObFileSqlAccessSpec &spec, const bool in_root_job);
 
   int generate_spec(ObLogInsert &op, ObTableInsertSpec &spec, const bool in_root_job);
 

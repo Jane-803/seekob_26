@@ -497,7 +497,7 @@ END_P SET_VAR DELIMITER
 %type <node> dynamic_sampling_hint
 %type <node> skip_index_type opt_skip_index_type_list
 %type <node> vec_index_params vec_index_param vec_index_param_value opt_with_vector_index_parameters
-%type <node> json_table_expr unnest_expr file_sql_expr mock_jt_on_error_on_empty jt_column_list json_table_column_def
+%type <node> json_table_expr unnest_expr file_sql_expr file_sql_arg_list file_sql_arg mock_jt_on_error_on_empty jt_column_list json_table_column_def
 %type <node> json_table_ordinality_column_def json_table_exists_column_def json_table_value_column_def json_table_nested_column_def
 %type <node> opt_value_on_empty_or_error_or_mismatch opt_on_mismatch
 %type <node> table_values_clause table_values_clause_with_order_by_and_limit values_row_list row_value
@@ -17432,16 +17432,34 @@ JSON '(' column_name ')' STORE AS '(' lob_storage_parameters ')'
 }
 ;
 
+file_sql_arg:
+expr
+{
+  $$ = $1;
+}
+;
+
+file_sql_arg_list:
+file_sql_arg
+{
+  malloc_list_node($$, result->malloc_pool_, T_EXPR_LIST, 2, 1, $1);
+}
+| file_sql_arg_list ',' file_sql_arg
+{
+  push_back_list(result->malloc_pool_, result, $$, $1, $3);
+}
+;
+
 file_sql_expr:
-READ_CSV '(' simple_expr_list ')'
+READ_CSV '(' file_sql_arg_list ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_EXPRESSION, 3, $3, NULL, NULL);
 }
-| READ_CSV '(' simple_expr_list ')' relation_name
+| READ_CSV '(' file_sql_arg_list ')' relation_name
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_EXPRESSION, 3, $3, $5, NULL);
 }
-| READ_CSV '(' simple_expr_list ')' AS relation_name
+| READ_CSV '(' file_sql_arg_list ')' AS relation_name
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_EXPRESSION, 3, $3, $6, NULL);
 }

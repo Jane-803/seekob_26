@@ -880,21 +880,27 @@ int ObSelectResolver::resolve_normal_query(const ParseNode &parse_tree)
     expr_resv_ctx_.set_new_scope();
   }
   OZ( resolve_field_list(*(parse_tree.children_[PARSE_SELECT_SELECT])));
+  LOG_INFO("FILE_SQL_STAGE after_field_list", K(ret));
 
   /* resolve group by clause */
   OZ( resolve_group_clause(group_by) );
+  LOG_INFO("FILE_SQL_STAGE after_group", K(ret));
 
   /* resolve having clause */
   OZ( resolve_having_clause(having) );
+  LOG_INFO("FILE_SQL_STAGE after_having", K(ret));
 
   OZ( resolve_order_clause(parse_tree.children_[PARSE_SELECT_ORDER]) );
+  LOG_INFO("FILE_SQL_STAGE after_order", K(ret));
   OZ( resolve_approx_clause(parse_tree.children_[PARSE_SELECT_APPROX]));
   OZ( resolve_limit_clause(parse_tree.children_[PARSE_SELECT_LIMIT]) );
+  LOG_INFO("FILE_SQL_STAGE after_limit", K(ret));
   OZ( resolve_vector_index_params(parse_tree.children_[PARSE_SELECT_VECTOR_INDEX_PARAMS]));
   OZ( resolve_fetch_clause(parse_tree.children_[PARSE_SELECT_FETCH]) );
   OZ( resolve_check_option_clause(parse_tree.children_[PARSE_SELECT_WITH_CHECK_OPTION]) );
   OZ( resolve_into_clause(ObResolverUtils::get_select_into_node(parse_tree)) );
   OZ( resolve_for_update_clause(parse_tree.children_[PARSE_SELECT_FOR_UPD]) );
+  LOG_INFO("FILE_SQL_STAGE after_for_update", K(ret));
 
   if (OB_SUCC(ret)) {
     bool has_snapshot_query = false;
@@ -929,7 +935,9 @@ int ObSelectResolver::resolve_normal_query(const ParseNode &parse_tree)
     }
   }
 
+  LOG_INFO("FILE_SQL_STAGE before_formalize", K(ret));
   OZ( select_stmt->formalize_stmt(session_info_) );
+  LOG_INFO("FILE_SQL_STAGE after_formalize", K(ret));
 
   if (OB_SUCC(ret) && has_nested_aggr_) {
     if (OB_FAIL(check_aggr_in_select_scope(select_stmt))) {
@@ -1052,6 +1060,7 @@ int ObSelectResolver::resolve(const ParseNode &parse_tree)
     }
   }
 
+  LOG_INFO("FILE_SQL_STAGE select_resolve", K(ret));
   return ret;
 }
 
@@ -1654,7 +1663,7 @@ int ObSelectResolver::expand_target_list(
   } else if (table_item.is_json_table()) {
     if (OB_FAIL(resolve_all_json_table_columns(table_item, &column_items))) {
     }
-  } else if (table_item.is_values_table()) {
+  } else if (table_item.is_values_table() || table_item.is_file_sql_table()) {
     if (OB_ISNULL(get_stmt()) || OB_UNLIKELY(get_stmt()->get_column_size() == 0)) {
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_FAIL(append(column_items, get_stmt()->get_column_items()))) {
@@ -1688,6 +1697,7 @@ int ObSelectResolver::expand_target_list(
       }
     }
   }
+  LOG_INFO("FILE_SQL_DIAG expand_target_list", K(ret), K(table_item.table_id_), K(column_items.count()));
   return ret;
 }
 

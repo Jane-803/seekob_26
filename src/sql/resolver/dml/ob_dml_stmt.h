@@ -190,6 +190,7 @@ struct TableItem
     JSON_TABLE,
     VALUES_TABLE,
     LATERAL_TABLE,
+    FILE_SQL_TABLE,
   };
 
   /**
@@ -226,6 +227,7 @@ struct TableItem
   bool is_values_table() const { return VALUES_TABLE == type_; }//used to mark values statement: values row(1,2), row(3,4);
 
   bool is_lateral_table() const { return LATERAL_TABLE == type_; }
+  bool is_file_sql_table() const { return FILE_SQL_TABLE == type_; }
   bool is_extended_all_or_user_sys_view() const
   {
     return (is_extended_sys_view_table(ref_id_) && (table_name_.prefix_match("USER_") || table_name_.prefix_match("ALL_")));
@@ -268,6 +270,7 @@ struct TableItem
   // else if generated id, it is unique just during the thread session
   uint64_t    table_id_;
   common::ObString    table_name_;
+  common::ObString    file_sql_path_;
   common::ObString    alias_name_;
   common::ObString    qb_name_; // used for hint
   TableType   type_;

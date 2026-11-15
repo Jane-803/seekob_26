@@ -397,6 +397,7 @@ class Path
     bool is_join_path() const;
     bool is_subquery_path() const;
     bool is_values_table_path() const;
+    bool is_file_sql_path() const;
     int check_is_base_table(bool &is_base_table);
     inline const common::ObIArray<OrderItem> &get_ordering() const { return ordering_; }
     inline common::ObIArray<OrderItem> &get_ordering() { return ordering_; }
@@ -1260,6 +1261,50 @@ class Path
       DISALLOW_COPY_AND_ASSIGN(ValuesTablePath);
   };
 
+class FileSqlPath : public Path
+{
+public:
+  FileSqlPath()
+    : Path(NULL),
+      table_id_(OB_INVALID_ID)
+  {
+  }
+
+  virtual ~FileSqlPath() {}
+
+  virtual int estimate_cost() override
+  {
+    op_cost_ = 1000.0;
+    cost_ = op_cost_;
+    return OB_SUCCESS;
+  }
+
+  int assign(const FileSqlPath &other, common::ObIAllocator *allocator)
+  {
+    int ret = Path::assign(other, allocator);
+    if (OB_SUCC(ret)) {
+      table_id_ = other.table_id_;
+    }
+    return ret;
+  }
+
+  virtual int get_name_internal(
+      char *buf, const int64_t buf_len, int64_t &pos) const override
+  {
+    int ret = OB_SUCCESS;
+    if (OB_FAIL(BUF_PRINTF("@file_sql_"))) {
+    } else if (OB_FAIL(BUF_PRINTF("%lu", table_id_))) {
+    }
+    return ret;
+  }
+
+public:
+  uint64_t table_id_;
+
+private:
+  DISALLOW_COPY_AND_ASSIGN(FileSqlPath);
+};
+
 struct InnerPathInfo {
   InnerPathInfo() :
         join_conditions_(),
@@ -2044,6 +2089,7 @@ struct NullAwareAntiJoinInfo {
     int generate_function_table_paths();
     int generate_json_table_paths();
     int generate_values_table_paths();
+    int generate_file_sql_paths();
     int generate_temp_table_paths();
 
     int compute_sharding_info_for_base_paths(ObIArray<AccessPath *> &access_paths);

@@ -44,6 +44,7 @@
 #include "ob_log_stat_collector.h"
 #include "ob_del_upd_log_plan.h"
 #include "ob_log_values_table_access.h"
+#include "ob_log_file_sql_access.h"
 #include "ob_log_expand.h"
 using namespace oceanbase;
 using namespace oceanbase::sql;
@@ -290,6 +291,13 @@ ObLogicalOperator *ObLogOperatorFactory::allocate(ObLogPlan &plan, ObLogOpType t
     ptr = allocator_.alloc(sizeof(ObLogOptimizerStatsGathering));
     if (NULL != ptr) {
       ret_op = new (ptr) ObLogOptimizerStatsGathering(plan);
+    }
+    break;
+  }
+  case LOG_FILE_SQL_ACCESS: {
+    ptr = allocator_.alloc(sizeof(ObLogFileSqlAccess));
+    if (NULL != ptr) {
+      ret_op = new (ptr) ObLogFileSqlAccess(plan);
     }
     break;
   }

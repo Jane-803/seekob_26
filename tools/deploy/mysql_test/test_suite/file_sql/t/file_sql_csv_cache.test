@@ -1,0 +1,13 @@
+# CSV paths participate in schema resolution and must not share a cached scan.
+--source mysql_test/test_suite/file_sql/include/copy_file_sql_data.inc
+--disable_query_log
+let $FILE_SQL_DATA_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql;
+set session enable_file_sql = ON;
+
+eval select count(*) as row_count from read_csv('$FILE_SQL_DATA_DIR/basic.csv');
+eval select count(*) as row_count from read_csv('$FILE_SQL_DATA_DIR/cache_second.csv');
+eval select count(*) as row_count from read_csv('$FILE_SQL_DATA_DIR/basic.csv');
+
+--disable_query_log
+set session enable_file_sql = OFF;
+--source mysql_test/test_suite/file_sql/include/remove_file_sql_data.inc
