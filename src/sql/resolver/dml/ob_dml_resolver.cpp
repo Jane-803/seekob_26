@@ -3538,10 +3538,11 @@ int ObDMLResolver::resolve_file_sql_item(
     LOG_WARN("read_csv requires enable_file_sql to be enabled", K(ret));
   } else if (OB_ISNULL(args_node = table_node.children_[0])
              || T_EXPR_LIST != args_node->type_
-             || 1 != args_node->num_child_
+             || args_node->num_child_ < 1
+             || args_node->num_child_ > 3
              || OB_ISNULL(args_node->children_[0])) {
     ret = OB_INVALID_ARGUMENT;
-    LOG_WARN("read_csv requires exactly one file path argument", K(ret));
+    LOG_WARN("read_csv requires a file path and supported options", K(ret));
   } else if (OB_ISNULL(allocator_)) {
     ret = OB_ERR_UNEXPECTED;
     LOG_WARN("CSV path allocator is null", K(ret));
@@ -3566,6 +3567,63 @@ int ObDMLResolver::resolve_file_sql_item(
                    *allocator_, ObString(path_node->str_len_,
                                          path_node->str_value_), file_path))) {
       LOG_WARN("failed to copy CSV path literal", K(ret));
+    }
+
+    bool seen_header = false;
+    bool seen_sample_size = false;
+    for (int64_t i = 1; OB_SUCC(ret) && i < args_node->num_child_; ++i) {
+      const ParseNode *option = args_node->children_[i];
+      const ParseNode *name_node = NULL;
+      const ParseNode *value_node = NULL;
+      if (OB_ISNULL(option) || option->type_ != T_OP_EQ ||
+          option->num_child_ != 2 ||
+          OB_ISNULL(name_node = option->children_[0]) ||
+          OB_ISNULL(value_node = option->children_[1])) {
+        ret = OB_INVALID_ARGUMENT;
+      } else {
+        if (name_node->type_ == T_COLUMN_REF && name_node->num_child_ == 3 &&
+            OB_NOT_NULL(name_node->children_[2])) {
+          name_node = name_node->children_[2];
+        }
+        ObString name(name_node->str_len_, name_node->str_value_);
+        int64_t value = 0;
+        bool valid_value = true;
+        bool negate = false;
+        if (value_node->type_ == T_OP_NEG && value_node->num_child_ == 1 &&
+            OB_NOT_NULL(value_node->children_[0])) {
+          negate = true;
+          value_node = value_node->children_[0];
+        }
+        if (value_node->type_ == T_BOOL || value_node->type_ == T_INT) {
+          value = value_node->value_;
+        } else if (value_node->type_ == T_QUESTIONMARK &&
+                   OB_NOT_NULL(params_.param_list_) &&
+                   value_node->value_ >= 0 &&
+                   value_node->value_ < params_.param_list_->count() &&
+                   params_.param_list_->at(value_node->value_).is_integer_type()) {
+          value = params_.param_list_->at(value_node->value_).get_int();
+        } else {
+          valid_value = false;
+        }
+        if (negate) {
+          value = -value;
+        }
+        if (!valid_value || OB_ISNULL(name_node->str_value_)) {
+          ret = OB_INVALID_ARGUMENT;
+        } else if (name.case_compare("header") == 0 && !seen_header) {
+          seen_header = true;
+          if (value != 1) {
+            ret = OB_NOT_SUPPORTED;
+          }
+        } else if (name.case_compare("sample_size") == 0 && !seen_sample_size) {
+          seen_sample_size = true;
+          if (value != -1) {
+            ret = OB_NOT_SUPPORTED;
+          }
+        } else {
+          ret = OB_INVALID_ARGUMENT;
+        }
+      }
     }
   }
   if (OB_SUCC(ret)) {
