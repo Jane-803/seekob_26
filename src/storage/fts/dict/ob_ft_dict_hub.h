@@ -18,8 +18,13 @@
 #define _OCEANBASE_STORAGE_FTS_DICT_OB_FT_DICT_HUB_H_
 
 #include "lib/charset/ob_charset.h"
+#include "lib/allocator/page_arena.h"
 #include "lib/lock/ob_bucket_lock.h"
+#include "storage/fts/dict/ob_ft_cache_container.h"
 #include "storage/fts/dict/ob_ft_dict_def.h"
+
+#include <atomic>
+#include <mutex>
 
 namespace oceanbase
 {
@@ -93,10 +98,15 @@ private:
 };
 
 class ObFTCacheRangeContainer;
+class ObIFTDict;
 class ObFTDictHub
 {
 public:
-  ObFTDictHub() : is_inited_(false), dict_map_(), rw_dict_lock_() {}
+  ObFTDictHub()
+      : is_inited_(false), dict_map_(), rw_dict_lock_(),
+        shared_allocator_(lib::ObMemAttr("FTSharedDict")),
+        main_container_(shared_allocator_), quan_container_(shared_allocator_),
+        main_dict_(nullptr), quan_dict_(nullptr) {}
   ~ObFTDictHub() {}
 
   int init();
@@ -106,6 +116,8 @@ public:
   int build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
 
   int load_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container);
+
+  int get_ik_dict(ObFTDictType type, ObIFTDict *&dict);
 
 private:
   int get_dict_info(const ObFTDictInfoKey &key, ObFTDictInfo &info);
@@ -118,6 +130,12 @@ private:
   // holds info of dict
   hash::ObHashMap<ObFTDictInfoKey, ObFTDictInfo> dict_map_;
   ObBucketLock rw_dict_lock_;
+  ObArenaAllocator shared_allocator_;
+  ObFTCacheRangeContainer main_container_;
+  ObFTCacheRangeContainer quan_container_;
+  std::mutex shared_dict_mutex_;
+  std::atomic<ObIFTDict *> main_dict_;
+  std::atomic<ObIFTDict *> quan_dict_;
 };
 
 } //  namespace storage

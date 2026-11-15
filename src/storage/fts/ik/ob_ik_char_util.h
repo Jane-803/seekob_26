@@ -52,6 +52,12 @@ public:
                                  const uint8_t char_len,
                                  CharType &type);
 
+  static int first_char_info(ObCollationType coll_type,
+                             const char *input,
+                             const int64_t input_len,
+                             int64_t &char_len,
+                             CharType &type);
+
   static int check_cn_number(ObCollationType coll_type,
                              const char *input,
                              const uint8_t char_len,
@@ -495,6 +501,27 @@ inline int ObFTCharUtil::classify_first_char(ObCollationType coll_type,
     ret = OB_NOT_SUPPORTED;
     STORAGE_FTS_LOG(WARN, "Not supported charset type", K(ret), K(cs_type));
     break;
+  }
+  return ret;
+}
+
+inline int ObFTCharUtil::first_char_info(ObCollationType coll_type,
+                                         const char *input,
+                                         const int64_t input_len,
+                                         int64_t &char_len,
+                                         CharType &type)
+{
+  int ret = OB_SUCCESS;
+  if (input_len > 0 && input != nullptr
+      && ObCharset::charset_type_by_coll(coll_type) == CHARSET_UTF8MB4
+      && static_cast<unsigned char>(*input) < 0x80) {
+    const unsigned char c = static_cast<unsigned char>(*input);
+    char_len = 1;
+    type = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+        ? CharType::ENGLISH_LETTER
+        : (c >= '0' && c <= '9' ? CharType::ARABIC_LETTER : CharType::USELESS);
+  } else if (OB_FAIL(ObCharset::first_valid_char(coll_type, input, input_len, char_len))) {
+  } else if (OB_FAIL(classify_first_char(coll_type, input, static_cast<uint8_t>(char_len), type))) {
   }
   return ret;
 }

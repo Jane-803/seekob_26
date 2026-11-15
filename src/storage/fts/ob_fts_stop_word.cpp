@@ -79,31 +79,35 @@ int ObStopWordChecker::check_stopword(const ObFTWord &word, bool &is_stopword)
   } else if (OB_UNLIKELY(word.empty())) {
     ret = OB_INVALID_ARGUMENT;
   } else {
-    common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
     common::ObString cmp_str = word.get_word().get_string();
     const ObCollationType src_type = word.get_collation_type();
     const ObCollationType dst_type = stopword_type_.get_collation_type();
     if (OB_UNLIKELY(!ObCharset::is_valid_collation(src_type) || !ObCharset::is_valid_collation(dst_type))) {
       ret = OB_INVALID_ARGUMENT;
     } else if (ObCharset::charset_type_by_coll(src_type) != ObCharset::charset_type_by_coll(dst_type)) {
+      common::ObArenaAllocator allocator(lib::ObMemAttr("ChkStopWord"));
       if (OB_FAIL(common::ObCharset::charset_convert(allocator, cmp_str, src_type, dst_type, cmp_str))) {
-        return ret;
+      } else if (OB_FAIL(lookup_stopword(cmp_str, is_stopword))) {
       }
+    } else if (OB_FAIL(lookup_stopword(cmp_str, is_stopword))) {
     }
-    if (OB_SUCC(ret)) {
-      ObFTWord converted(cmp_str.length(), cmp_str.ptr(), stopword_type_);
-      ret = stopword_set_.exist_refactored(converted);
-      if (OB_HASH_NOT_EXIST == ret) {
-        is_stopword = false;
-        ret = OB_SUCCESS;
-      } else if (OB_HASH_EXIST == ret) {
-        is_stopword = true;
-        ret = OB_SUCCESS;
-      } else if (OB_SUCC(ret)) {
-        ret = OB_ERR_UNEXPECTED;
-      } else {
-      }
-    }
+  }
+  return ret;
+}
+
+int ObStopWordChecker::lookup_stopword(const common::ObString &word, bool &is_stopword)
+{
+  int ret = OB_SUCCESS;
+  ObFTWord converted(word.length(), word.ptr(), stopword_type_);
+  ret = stopword_set_.exist_refactored(converted);
+  if (OB_HASH_NOT_EXIST == ret) {
+    is_stopword = false;
+    ret = OB_SUCCESS;
+  } else if (OB_HASH_EXIST == ret) {
+    is_stopword = true;
+    ret = OB_SUCCESS;
+  } else if (OB_SUCC(ret)) {
+    ret = OB_ERR_UNEXPECTED;
   }
   return ret;
 }

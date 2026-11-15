@@ -8,6 +8,10 @@ use fts_parser_hot_path;
 
 select json_length(tokenize('lower lower lower', 'beng')) = 1 as repeated_lower,
        json_contains(tokenize('lower lower lower', 'beng'), '"lower"') as lower_present;
+select json_extract(tokenize('lower lower lower', 'beng', '[{"output":"all"}]'),
+                    '$.tokens[0].lower') = 3 as repeated_frequency,
+       json_extract(tokenize('the lower the', 'beng', '[{"output":"all"}]'),
+                    '$.doc_len') = 1 as stopword_length;
 select json_length(tokenize('LOWER Mixed CASE', 'beng')) = 3 as mixed_case_count,
        json_contains(tokenize('LOWER Mixed CASE', 'beng'), '"lower"') as lower_casefold,
        json_contains(tokenize('LOWER Mixed CASE', 'beng'), '"mixed"') as mixed_casefold,

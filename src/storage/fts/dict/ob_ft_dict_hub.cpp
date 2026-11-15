@@ -43,7 +43,75 @@ int ObFTDictHub::init()
 int ObFTDictHub::destroy()
 {
   int ret = OB_SUCCESS;
+  std::lock_guard<std::mutex> guard(shared_dict_mutex_);
+  ObIFTDict *main = main_dict_.exchange(nullptr);
+  ObIFTDict *quan = quan_dict_.exchange(nullptr);
+  if (main != nullptr) {
+    main->~ObIFTDict();
+  }
+  if (quan != nullptr) {
+    quan->~ObIFTDict();
+  }
+  main_container_.reset();
+  quan_container_.reset();
+  shared_allocator_.reset();
   is_inited_ = false;
+  return ret;
+}
+
+int ObFTDictHub::get_ik_dict(ObFTDictType type, ObIFTDict *&dict)
+{
+  int ret = OB_SUCCESS;
+  std::atomic<ObIFTDict *> *slot = nullptr;
+  ObFTCacheRangeContainer *container = nullptr;
+  const char *name = nullptr;
+  if (!is_inited_) {
+    ret = OB_NOT_INIT;
+  } else if (type == ObFTDictType::DICT_IK_MAIN) {
+    slot = &main_dict_;
+    container = &main_container_;
+    name = "main_dict";
+  } else if (type == ObFTDictType::DICT_IK_QUAN) {
+    slot = &quan_dict_;
+    container = &quan_container_;
+    name = "quan_dict";
+  } else {
+    ret = OB_INVALID_ARGUMENT;
+  }
+
+  if (OB_SUCC(ret)) {
+    dict = slot->load(std::memory_order_acquire);
+    if (dict == nullptr) {
+      std::lock_guard<std::mutex> guard(shared_dict_mutex_);
+      dict = slot->load(std::memory_order_acquire);
+      if (dict == nullptr) {
+        ObFTDictDesc desc(name, type, ObCharsetType::CHARSET_UTF8MB4,
+                          ObCollationType::CS_TYPE_UTF8MB4_BIN);
+        ObFTRangeDict *range_dict = nullptr;
+        if (OB_FAIL(load_cache(desc, *container))) {
+          if (ret == OB_ENTRY_NOT_EXIST) {
+            ret = build_cache(desc, *container);
+          }
+        }
+        if (OB_SUCC(ret)) {
+          if (OB_ISNULL(range_dict = OB_NEWx(ObFTRangeDict, &shared_allocator_,
+                                             shared_allocator_, container, desc))) {
+            ret = OB_ALLOCATE_MEMORY_FAILED;
+          } else if (OB_FAIL(range_dict->init())) {
+          } else {
+            dict = range_dict;
+            slot->store(dict, std::memory_order_release);
+          }
+        }
+        if (OB_FAIL(ret)) {
+          if (range_dict != nullptr) {
+            range_dict->~ObFTRangeDict();
+          }
+          container->reset();
+        }
+      }
+    }
+  }
   return ret;
 }
 int ObFTDictHub::build_cache(const ObFTDictDesc &desc, ObFTCacheRangeContainer &container)

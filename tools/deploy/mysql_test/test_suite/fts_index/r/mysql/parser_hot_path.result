@@ -9,6 +9,15 @@ select json_length(tokenize('lower lower lower', 'beng')) = 1 as repeated_lower,
 +----------------+---------------+
 |              1 |             1 |
 +----------------+---------------+
+select json_extract(tokenize('lower lower lower', 'beng', '[{"output":"all"}]'),
+                    '$.tokens[0].lower') = 3 as repeated_frequency,
+       json_extract(tokenize('the lower the', 'beng', '[{"output":"all"}]'),
+                    '$.doc_len') = 1 as stopword_length;
++--------------------+-----------------+
+| repeated_frequency | stopword_length |
++--------------------+-----------------+
+|                  1 |               1 |
++--------------------+-----------------+
 select json_length(tokenize('LOWER Mixed CASE', 'beng')) = 3 as mixed_case_count,
        json_contains(tokenize('LOWER Mixed CASE', 'beng'), '"lower"') as lower_casefold,
        json_contains(tokenize('LOWER Mixed CASE', 'beng'), '"mixed"') as mixed_casefold,
