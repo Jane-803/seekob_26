@@ -1706,6 +1706,7 @@ int ObStaticEngineCG::generate_spec(
                  op.get_column_exprs().count()))) {
   } else {
     spec.file_format_ = op.get_file_format();
+    spec.has_header_ = op.has_header();
     for (int64_t i = 0;
          OB_SUCC(ret) && i < op.get_column_exprs().count();
          ++i) {

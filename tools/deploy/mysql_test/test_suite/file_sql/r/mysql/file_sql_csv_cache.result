@@ -1,5 +1,15 @@
 row_count
 3
+id	is_null	value_len
+1	1	NULL
+2	0	0
+3	0	3
+value
+9223372036854775807
+9223372036854775808
+column1	column2
+7	alpha
+8	beta
 row_count
 1
 row_count

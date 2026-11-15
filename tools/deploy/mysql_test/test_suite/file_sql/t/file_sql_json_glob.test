@@ -13,6 +13,13 @@ eval select c.id, j.name
        from read_csv('$FILE_SQL_DATA_DIR/basic.csv') c
        join read_json('$FILE_SQL_DATA_DIR/basic.jsonl') j on c.id = j.id
       order by c.id;
+eval select count(*) as row_count, min(c1) as first_value,
+            max(c1) as last_value, sum(c1) as value_sum
+       from read_parquet('$FILE_SQL_DATA_DIR/simple.parquet');
+eval select p.c1, c.name
+       from read_parquet('$FILE_SQL_DATA_DIR/simple.parquet') p
+       left join read_csv('$FILE_SQL_DATA_DIR/basic.csv') c on p.c1 = c.id
+      order by p.c1;
 eval select substring_index(file, '/', -1) as file
        from glob('$FILE_SQL_DATA_DIR/*')
       order by file;

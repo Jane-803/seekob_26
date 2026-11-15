@@ -32,7 +32,10 @@ file
 basic.csv
 basic.jsonl
 cache_second.csv
+csv_nulls.csv
 invalid.txt
+no_header.csv
+numeric_boundaries.csv
 simple.parquet
 # COPY query to CSV and read it back
 id	name	score

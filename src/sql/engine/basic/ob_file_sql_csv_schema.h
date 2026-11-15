@@ -11,7 +11,8 @@ namespace sql
 inline int infer_file_sql_csv_schema(
     const char *path,
     std::vector<std::string> &columns,
-    std::vector<ObFileSqlType> &types)
+    std::vector<ObFileSqlType> &types,
+    bool has_header = true)
 {
   columns.clear();
   types.clear();
@@ -21,23 +22,36 @@ inline int infer_file_sql_csv_schema(
     return -1;
   }
 
-  if (reader.read_header(columns) != 0 || columns.empty()) {
-    return -1;
+  if (has_header) {
+    if (reader.read_header(columns) != 0 || columns.empty()) {
+      return -1;
+    }
+  } else {
+    std::vector<std::string> first_row;
+    if (reader.next_row(first_row) != 0 || first_row.empty() ||
+        reader.rescan() != 0) {
+      return -1;
+    }
+    for (size_t i = 0; i < first_row.size(); ++i) {
+      columns.push_back("column" + std::to_string(i + 1));
+    }
   }
 
   deduplicate_csv_columns(columns);
   types.assign(columns.size(), ObFileSqlType::NULL_VALUE);
 
   std::vector<std::string> row;
+  std::vector<bool> nulls;
   int status = 0;
 
-  while ((status = reader.next_row(row)) == 0) {
+  while ((status = reader.next_row(row, &nulls)) == 0) {
     if (row.size() != columns.size()) {
       return -1;
     }
 
     for (size_t i = 0; i < row.size(); ++i) {
-      types[i] = merge_csv_types(types[i], infer_csv_value(row[i]));
+      types[i] = merge_csv_types(types[i], nulls[i] ? ObFileSqlType::NULL_VALUE
+          : row[i].empty() ? ObFileSqlType::STRING : infer_csv_value(row[i]));
     }
   }
 

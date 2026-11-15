@@ -14,7 +14,8 @@ public:
     : ObLogicalOperator(plan),
       table_id_(common::OB_INVALID_ID),
       file_path_(),
-      file_format_(0)
+      file_format_(0),
+      has_header_(true)
   {
   }
 
@@ -35,6 +36,8 @@ public:
 
   void set_file_format(int64_t format) { file_format_ = format; }
   int64_t get_file_format() const { return file_format_; }
+  void set_has_header(bool value) { has_header_ = value; }
+  bool has_header() const { return has_header_; }
 
   common::ObIArray<ObColumnRefRawExpr *> &get_column_exprs()
   {
@@ -110,6 +113,7 @@ private:
   uint64_t table_id_;
   common::ObString file_path_;
   int64_t file_format_;
+  bool has_header_;
   common::ObSEArray<ObColumnRefRawExpr *, 4,
                     common::ModulePageAllocator, true> column_exprs_;
 

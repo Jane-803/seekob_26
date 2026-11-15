@@ -11820,6 +11820,7 @@ int ObLogPlan::allocate_file_sql_path(
     file_op->set_table_id(file_path->table_id_);
     file_op->set_file_path(table_item->file_sql_path_);
     file_op->set_file_format(table_item->file_sql_format_);
+    file_op->set_has_header(table_item->file_sql_has_header_);
 
     ObSEArray<ObColumnRefRawExpr *, 4> column_exprs;
 

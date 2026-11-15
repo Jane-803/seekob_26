@@ -8,9 +8,22 @@ id	name
 1	Alice
 2	Bob
 3	Chen
+row_count	first_value	last_value	value_sum
+7	0	6	21
+c1	name
+0	NULL
+1	Alice
+2	Bob
+3	Chen
+4	NULL
+5	NULL
+6	NULL
 file
 basic.csv
 basic.jsonl
 cache_second.csv
+csv_nulls.csv
 invalid.txt
+no_header.csv
+numeric_boundaries.csv
 simple.parquet

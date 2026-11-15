@@ -21,6 +21,7 @@
 #include "sql/resolver/ob_resolver_utils.h"
 #include "sql/engine/basic/ob_file_sql_csv_schema.h"
 #include "sql/engine/basic/ob_file_sql_json_reader.h"
+#include "sql/engine/basic/ob_file_sql_parquet_reader.h"
 #include "sql/engine/basic/ob_file_sql_format.h"
 #include "ob_dml_resolver.h"
 #include "sql/resolver/dml/ob_view_table_resolver.h"
@@ -3524,6 +3525,7 @@ int ObDMLResolver::resolve_file_sql_item(
   const ParseNode *path_node = NULL;
   ObString file_path;
   bool enable_file_sql = false;
+  bool csv_has_header = true;
   table_item = NULL;
 
   if (T_FILE_SQL_EXPRESSION != table_node.type_ || 3 != table_node.num_child_ ||
@@ -3638,8 +3640,10 @@ int ObDMLResolver::resolve_file_sql_item(
         } else if (table_node.value_ == FILE_SQL_CSV &&
                    name.case_compare("header") == 0 && !seen_header) {
           seen_header = true;
-          if (value != 1) {
-            ret = OB_NOT_SUPPORTED;
+          if (value != 0 && value != 1) {
+            ret = OB_INVALID_ARGUMENT;
+          } else {
+            csv_has_header = value == 1;
           }
         } else if ((table_node.value_ == FILE_SQL_CSV ||
                     table_node.value_ == FILE_SQL_JSONL) &&
@@ -3686,6 +3690,10 @@ int ObDMLResolver::resolve_file_sql_item(
     }
     if (OB_SUCC(ret) && OB_FAIL(session_info_->get_secure_file_priv(secure_file_priv))) {
       LOG_WARN("failed to get secure_file_priv", K(ret));
+    } else if (OB_SUCC(ret) && !file_sql_secure_path_allowed(
+                   secure_check_buf, secure_file_priv.ptr(), secure_file_priv.length())) {
+      ret = OB_ERR_NO_PRIVILEGE;
+      LOG_WARN("file SQL path is outside secure_file_priv", K(ret), K(file_path));
     } else if (OB_SUCC(ret) && OB_FAIL(ObResolverUtils::check_secure_path(
                    secure_file_priv, ObString(secure_check_buf)))) {
       LOG_WARN("file SQL path is not allowed", K(ret), K(file_path));
@@ -3694,9 +3702,12 @@ int ObDMLResolver::resolve_file_sql_item(
       std::vector<std::string> csv_columns;
       std::vector<ObFileSqlType> csv_types;
       const int schema_ret = table_node.value_ == FILE_SQL_CSV
-          ? infer_file_sql_csv_schema(full_path_buf, csv_columns, csv_types)
+          ? infer_file_sql_csv_schema(full_path_buf, csv_columns, csv_types,
+                                      csv_has_header)
           : table_node.value_ == FILE_SQL_JSONL
               ? infer_file_sql_json_schema(full_path_buf, csv_columns, csv_types)
+              : table_node.value_ == FILE_SQL_PARQUET
+                  ? infer_file_sql_parquet_schema(full_path_buf, csv_columns, csv_types)
               : table_node.value_ == FILE_SQL_GLOB ? 0 : -1;
       if (table_node.value_ == FILE_SQL_GLOB) {
         csv_columns.push_back("file");
@@ -3710,6 +3721,7 @@ int ObDMLResolver::resolve_file_sql_item(
         TableItem *new_item = NULL;
         ObString saved_path;
         ObString alias_name(table_node.value_ == FILE_SQL_JSONL ? "read_json" :
+                            table_node.value_ == FILE_SQL_PARQUET ? "read_parquet" :
                             table_node.value_ == FILE_SQL_GLOB ? "glob" : "read_csv");
         const ParseNode *alias_node = table_node.children_[1];
 
@@ -3739,6 +3751,7 @@ int ObDMLResolver::resolve_file_sql_item(
             new_item->type_ = TableItem::FILE_SQL_TABLE;
             new_item->file_sql_path_ = saved_path;
             new_item->file_sql_format_ = table_node.value_;
+            new_item->file_sql_has_header_ = csv_has_header;
             new_item->is_view_table_ = false;
 
             if (OB_FAIL(stmt->add_table_item(session_info_, new_item))) {

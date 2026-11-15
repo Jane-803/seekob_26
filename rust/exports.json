@@ -1,4 +1,9 @@
 {
+  "file_sql_parquet": {
+    "crate": "file-sql-parquet",
+    "headers": {},
+    "deps": []
+  },
   "sql_nio": {
     "crate": "sql-nio",
     "headers": {},

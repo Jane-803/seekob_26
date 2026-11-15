@@ -1,0 +1,16 @@
+[package]
+name = "file-sql-parquet"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+name = "file_sql_parquet"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+parquet = { version = "56.2.0", default-features = false, features = ["snap"] }
+
+[dev-dependencies]
+base64 = "0.22"

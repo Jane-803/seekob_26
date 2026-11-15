@@ -19,6 +19,7 @@ OB_SERIALIZE_MEMBER_INHERIT(ObFileSqlAccessSpec,
                             ObOpSpec,
                             file_path_,
                             file_format_,
+                            has_header_,
                             column_exprs_,
                             column_names_);
 
@@ -29,6 +30,7 @@ ObFileSqlAccessOp::ObFileSqlAccessOp(
   : ObOperator(exec_ctx, spec, input),
     reader_(),
     json_reader_(),
+    parquet_reader_(),
     row_()
 {
 }
@@ -64,6 +66,9 @@ int ObFileSqlAccessOp::inner_open()
             struct stat info;
             if (::realpath(matches.gl_pathv[i], canonical) == nullptr) {
               ret = OB_FILE_NOT_EXIST;
+            } else if (!file_sql_secure_path_allowed(
+                           canonical, secure_file_priv.ptr(), secure_file_priv.length())) {
+              ret = OB_ERR_NO_PRIVILEGE;
             } else if (OB_FAIL(ObResolverUtils::check_secure_path(
                            secure_file_priv, ObString(canonical)))) {
             } else if (::stat(canonical, &info) != 0) {
@@ -75,6 +80,22 @@ int ObFileSqlAccessOp::inner_open()
         }
       }
       ::globfree(&matches);
+    } else if (MY_SPEC.file_format_ == FILE_SQL_PARQUET) {
+      if (parquet_reader_.open(path.c_str()) != 0) {
+        ret = OB_IO_ERROR;
+      } else if (parquet_reader_.columns().size() !=
+                 static_cast<size_t>(MY_SPEC.column_names_.count())) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.column_names_.count(); ++i) {
+          const ObString &expected = MY_SPEC.column_names_.at(i);
+          const std::string &actual = parquet_reader_.columns()[i];
+          if (expected.length() != static_cast<int64_t>(actual.size()) ||
+              MEMCMP(expected.ptr(), actual.data(), actual.size()) != 0) {
+            ret = OB_ERR_UNEXPECTED;
+          }
+        }
+      }
     } else if (MY_SPEC.file_format_ == FILE_SQL_JSONL) {
       column_names_.clear();
       for (int64_t i = 0; i < MY_SPEC.column_names_.count(); ++i) {
@@ -90,10 +111,24 @@ int ObFileSqlAccessOp::inner_open()
     } else if (reader_.open(path.c_str()) != 0) {
       ret = OB_IO_ERROR;
       LOG_ERROR("file SQL CSV open failed", K(ret), "path", path.c_str());
-    } else if (reader_.read_header(row_) != 0 ||
-               row_.size() != static_cast<size_t>(MY_SPEC.column_exprs_.count())) {
+    } else if ((MY_SPEC.has_header_ ? reader_.read_header(row_)
+                                    : reader_.rescan()) != 0 ||
+               (MY_SPEC.has_header_ &&
+                row_.size() != static_cast<size_t>(MY_SPEC.column_exprs_.count()))) {
       ret = OB_ERR_UNEXPECTED;
       reader_.close();
+    } else if (MY_SPEC.has_header_) {
+      deduplicate_csv_columns(row_);
+      for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.column_names_.count(); ++i) {
+        const ObString &expected = MY_SPEC.column_names_.at(i);
+        if (expected.length() != static_cast<int64_t>(row_[i].size()) ||
+            MEMCMP(expected.ptr(), row_[i].data(), row_[i].size()) != 0) {
+          ret = OB_ERR_UNEXPECTED;
+        }
+      }
+      if (OB_FAIL(ret)) {
+        reader_.close();
+      }
     }
   }
 
@@ -105,6 +140,10 @@ int ObFileSqlAccessOp::inner_rescan()
   int ret = OB_SUCCESS;
 
   if (OB_FAIL(ObOperator::inner_rescan())) {
+  } else if (MY_SPEC.file_format_ == FILE_SQL_PARQUET) {
+    if (parquet_reader_.rescan() != 0) {
+      ret = OB_IO_ERROR;
+    }
   } else if (MY_SPEC.file_format_ == FILE_SQL_JSONL) {
     if (json_reader_.rescan() != 0) {
       ret = OB_IO_ERROR;
@@ -112,10 +151,11 @@ int ObFileSqlAccessOp::inner_rescan()
     }
   } else if (MY_SPEC.file_format_ == FILE_SQL_GLOB) {
     glob_index_ = 0;
-  } else if (reader_.read_header(row_) != 0) {
+  } else if ((MY_SPEC.has_header_ ? reader_.read_header(row_)
+                                  : reader_.rescan()) != 0) {
     ret = OB_ERR_UNEXPECTED;
     LOG_ERROR("file SQL CSV rescan failed", K(ret));
-  } else if (row_.size() !=
+  } else if (MY_SPEC.has_header_ && row_.size() !=
              static_cast<size_t>(MY_SPEC.column_exprs_.count())) {
     ret = OB_ERR_UNEXPECTED;
   }
@@ -137,11 +177,14 @@ int ObFileSqlAccessOp::inner_get_next_row()
         read_ret = 1;
       } else {
         row_.assign(1, glob_paths_[glob_index_++]);
+        nulls_.assign(1, false);
       }
     } else {
       read_ret = MY_SPEC.file_format_ == FILE_SQL_JSONL
           ? json_reader_.next_row(column_names_, row_, nulls_)
-          : reader_.next_row(row_);
+          : MY_SPEC.file_format_ == FILE_SQL_PARQUET
+              ? parquet_reader_.next_row(row_, nulls_)
+              : reader_.next_row(row_, &nulls_);
     }
 
     if (read_ret == 1) {
@@ -151,7 +194,8 @@ int ObFileSqlAccessOp::inner_get_next_row()
       LOG_ERROR("file SQL read failed", K(ret), K(read_ret), K(MY_SPEC.file_format_),
                 K(json_reader_.line_number()));
     } else if (row_.size() !=
-               static_cast<size_t>(MY_SPEC.column_exprs_.count())) {
+                   static_cast<size_t>(MY_SPEC.column_exprs_.count()) ||
+               nulls_.size() != row_.size()) {
       ret = OB_ERR_UNEXPECTED;
     } else {
       ObCastMode cast_mode = CM_NONE;
@@ -179,14 +223,12 @@ int ObFileSqlAccessOp::inner_get_next_row()
             ObObj src_obj;
             ObObj dst_obj;
 
-            if (MY_SPEC.file_format_ == FILE_SQL_JSONL ? nulls_[i] : value.empty()) {
+            if (nulls_[i]) {
               src_obj.set_null();
             } else if (expr->obj_meta_.get_type() ==
                        ObTinyIntType &&
-                       (value == "true" || value == "TRUE" ||
-                        value == "false" || value == "FALSE")) {
-              src_obj.set_tinyint(
-                  value == "true" || value == "TRUE" ? 1 : 0);
+                       is_file_sql_boolean_text(value)) {
+              src_obj.set_tinyint(value[0] == 't' || value[0] == 'T' ? 1 : 0);
             } else {
               const ObString text(
                   static_cast<int32_t>(value.size()),
@@ -243,6 +285,7 @@ int ObFileSqlAccessOp::inner_close()
 {
   reader_.close();
   json_reader_.close();
+  parquet_reader_.close();
   row_.clear();
   column_names_.clear();
   nulls_.clear();
@@ -255,6 +298,7 @@ void ObFileSqlAccessOp::destroy()
 {
   reader_.close();
   json_reader_.close();
+  parquet_reader_.close();
   glob_paths_.clear();
   ObOperator::destroy();
 }

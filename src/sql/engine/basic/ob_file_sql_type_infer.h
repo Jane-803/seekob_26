@@ -1,5 +1,4 @@
-#ifndef OCEANBASE_SQL_OB_FILE_SQL_TYPE_INFER_H_
-#define OCEANBASE_SQL_OB_FILE_SQL_TYPE_INFER_H_
+#pragma once
 
 #include <cerrno>
 #include <cmath>
@@ -79,15 +78,36 @@ inline ObFileSqlType merge_csv_types(ObFileSqlType a, ObFileSqlType b)
   return ObFileSqlType::STRING;
 }
 
+inline bool is_file_sql_boolean_text(const std::string &s)
+{
+  if (s.size() != 4 && s.size() != 5) return false;
+  const char *expected = s.size() == 4 ? "true" : "false";
+  for (size_t i = 0; i < s.size(); ++i) {
+    const char ch = s[i] >= 'A' && s[i] <= 'Z'
+        ? static_cast<char>(s[i] - 'A' + 'a') : s[i];
+    if (ch != expected[i]) return false;
+  }
+  return true;
+}
+
 inline ObFileSqlType infer_csv_value(const std::string &s)
 {
   if (s.empty()) return ObFileSqlType::NULL_VALUE;
-  if (s == "true" || s == "false") return ObFileSqlType::BOOLEAN;
+  if (is_file_sql_boolean_text(s)) return ObFileSqlType::BOOLEAN;
+
+  size_t digit_start = (s[0] == '-' || s[0] == '+') ? 1 : 0;
+  bool integer_text = digit_start < s.size();
+  for (size_t i = digit_start; integer_text && i < s.size(); ++i) {
+    integer_text = s[i] >= '0' && s[i] <= '9';
+  }
 
   char *end = nullptr;
   errno = 0;
   std::strtoll(s.c_str(), &end, 10);
-  if (errno == 0 && end != s.c_str() && *end == '\0') {
+  if (integer_text && errno == ERANGE) {
+    return ObFileSqlType::STRING;
+  }
+  if (integer_text && errno == 0 && end != s.c_str() && *end == '\0') {
     return ObFileSqlType::INTEGER;
   }
 
@@ -105,5 +125,3 @@ inline ObFileSqlType infer_csv_value(const std::string &s)
 
 } // namespace sql
 } // namespace oceanbase
-
-#endif

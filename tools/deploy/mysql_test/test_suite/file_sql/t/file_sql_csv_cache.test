@@ -5,6 +5,13 @@ let $FILE_SQL_DATA_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql;
 set session enable_file_sql = ON;
 
 eval select count(*) as row_count from read_csv('$FILE_SQL_DATA_DIR/basic.csv');
+eval select id, value is null as is_null, length(value) as value_len
+       from read_csv('$FILE_SQL_DATA_DIR/csv_nulls.csv') order by id;
+eval select value from read_csv('$FILE_SQL_DATA_DIR/numeric_boundaries.csv')
+       order by value;
+eval select column1, column2
+       from read_csv('$FILE_SQL_DATA_DIR/no_header.csv', header = false)
+       order by column1;
 eval select count(*) as row_count from read_csv('$FILE_SQL_DATA_DIR/cache_second.csv');
 eval select count(*) as row_count from read_csv('$FILE_SQL_DATA_DIR/basic.csv');
 

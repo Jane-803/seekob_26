@@ -5,6 +5,7 @@
 #include "sql/engine/ob_operator.h"
 #include "sql/engine/basic/ob_file_sql_csv_reader.h"
 #include "sql/engine/basic/ob_file_sql_json_reader.h"
+#include "sql/engine/basic/ob_file_sql_parquet_reader.h"
 #include "sql/engine/basic/ob_file_sql_format.h"
 
 namespace oceanbase
@@ -21,6 +22,7 @@ public:
     : ObOpSpec(alloc, type),
       file_path_(),
       file_format_(0),
+      has_header_(true),
       column_exprs_(alloc),
       column_names_(alloc)
   {
@@ -28,6 +30,7 @@ public:
 
   common::ObString file_path_;
   int64_t file_format_;
+  bool has_header_;
   common::ObFixedArray<ObExpr *, common::ObIAllocator> column_exprs_;
   common::ObFixedArray<common::ObString, common::ObIAllocator> column_names_;
 
@@ -51,6 +54,7 @@ public:
 private:
   ObFileSqlCsvReader reader_;
   ObFileSqlJsonReader json_reader_;
+  ObFileSqlParquetReader parquet_reader_;
   std::vector<std::string> row_;
   std::vector<std::string> column_names_;
   std::vector<bool> nulls_;

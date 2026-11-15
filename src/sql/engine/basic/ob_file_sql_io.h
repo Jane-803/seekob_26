@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <fcntl.h>
+#include <limits.h>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -10,6 +11,31 @@ namespace oceanbase
 {
 namespace sql
 {
+
+inline bool file_sql_secure_path_allowed(const char *path,
+                                         const char *secure_dir,
+                                         size_t secure_dir_len)
+{
+  if (path == nullptr || secure_dir == nullptr || secure_dir_len == 0 ||
+      std::string(secure_dir, secure_dir_len).find('\0') != std::string::npos) {
+    return false;
+  }
+  const std::string allowed_dir(secure_dir, secure_dir_len);
+  char canonical_dir[PATH_MAX];
+  char canonical_path[PATH_MAX];
+  struct stat info;
+  if (::realpath(allowed_dir.c_str(), canonical_dir) == nullptr ||
+      ::stat(canonical_dir, &info) != 0 || !S_ISDIR(info.st_mode) ||
+      ::realpath(path, canonical_path) == nullptr) {
+    return false;
+  }
+  const std::string prefix(canonical_dir);
+  const std::string candidate(canonical_path);
+  return prefix == "/" ? candidate[0] == '/'
+      : candidate.size() > prefix.size() &&
+        candidate.compare(0, prefix.size(), prefix) == 0 &&
+        candidate[prefix.size()] == '/';
+}
 
 inline std::FILE *open_file_sql_regular(const char *path, struct stat &info)
 {
