@@ -13,7 +13,8 @@ public:
   explicit ObLogFileSqlAccess(ObLogPlan &plan)
     : ObLogicalOperator(plan),
       table_id_(common::OB_INVALID_ID),
-      file_path_()
+      file_path_(),
+      file_format_(0)
   {
   }
 
@@ -31,6 +32,9 @@ public:
   {
     return file_path_;
   }
+
+  void set_file_format(int64_t format) { file_format_ = format; }
+  int64_t get_file_format() const { return file_format_; }
 
   common::ObIArray<ObColumnRefRawExpr *> &get_column_exprs()
   {
@@ -105,6 +109,7 @@ public:
 private:
   uint64_t table_id_;
   common::ObString file_path_;
+  int64_t file_format_;
   common::ObSEArray<ObColumnRefRawExpr *, 4,
                     common::ModulePageAllocator, true> column_exprs_;
 

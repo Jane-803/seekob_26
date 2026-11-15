@@ -1,11 +1,8 @@
 #pragma once
 
 #include <cstdio>
-#include <cerrno>
-#include <fcntl.h>
+#include "sql/engine/basic/ob_file_sql_io.h"
 #include <string>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <vector>
 
 namespace oceanbase
@@ -26,46 +23,8 @@ public:
   int open(const char *path)
   {
     close();
-    if (path == nullptr || path[0] != '/') {
-      return -1;
-    }
-    int dir_fd = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dir_fd < 0) {
-      return -1;
-    }
-    const std::string full_path(path);
-    size_t begin = 1;
-    int file_fd = -1;
-    while (begin < full_path.size()) {
-      const size_t end = full_path.find('/', begin);
-      const bool last = end == std::string::npos;
-      const std::string component = full_path.substr(begin, last ? end : end - begin);
-      if (component.empty() || component == "." || component == "..") {
-        break;
-      }
-      const int next_fd = ::openat(dir_fd, component.c_str(),
-          O_RDONLY | O_CLOEXEC | O_NOFOLLOW | (last ? O_NONBLOCK : O_DIRECTORY));
-      if (next_fd < 0) {
-        break;
-      }
-      if (last) {
-        file_fd = next_fd;
-      } else {
-        ::close(dir_fd);
-        dir_fd = next_fd;
-        begin = end + 1;
-      }
-    }
-    ::close(dir_fd);
-    if (file_fd < 0) {
-      return -1;
-    }
-    if (::fstat(file_fd, &initial_stat_) != 0 || !S_ISREG(initial_stat_.st_mode) ||
-        (file_ = ::fdopen(file_fd, "rb")) == nullptr) {
-      ::close(file_fd);
-      return -1;
-    }
-    return 0;
+    file_ = open_file_sql_regular(path, initial_stat_);
+    return file_ == nullptr ? -1 : 0;
   }
 
   int read_header(std::vector<std::string> &columns)
@@ -159,15 +118,7 @@ public:
 private:
   bool unchanged() const
   {
-    struct stat now;
-    return ::fstat(::fileno(file_), &now) == 0 &&
-           now.st_dev == initial_stat_.st_dev &&
-           now.st_ino == initial_stat_.st_ino &&
-           now.st_size == initial_stat_.st_size &&
-           now.st_mtim.tv_sec == initial_stat_.st_mtim.tv_sec &&
-           now.st_mtim.tv_nsec == initial_stat_.st_mtim.tv_nsec &&
-           now.st_ctim.tv_sec == initial_stat_.st_ctim.tv_sec &&
-           now.st_ctim.tv_nsec == initial_stat_.st_ctim.tv_nsec;
+    return file_sql_stat_unchanged(file_, initial_stat_);
   }
 
   std::FILE *file_;

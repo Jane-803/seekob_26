@@ -4,6 +4,8 @@
 #include <vector>
 #include "sql/engine/ob_operator.h"
 #include "sql/engine/basic/ob_file_sql_csv_reader.h"
+#include "sql/engine/basic/ob_file_sql_json_reader.h"
+#include "sql/engine/basic/ob_file_sql_format.h"
 
 namespace oceanbase
 {
@@ -18,12 +20,16 @@ public:
                       const ObPhyOperatorType type)
     : ObOpSpec(alloc, type),
       file_path_(),
-      column_exprs_(alloc)
+      file_format_(0),
+      column_exprs_(alloc),
+      column_names_(alloc)
   {
   }
 
   common::ObString file_path_;
+  int64_t file_format_;
   common::ObFixedArray<ObExpr *, common::ObIAllocator> column_exprs_;
+  common::ObFixedArray<common::ObString, common::ObIAllocator> column_names_;
 
 private:
   DISALLOW_COPY_AND_ASSIGN(ObFileSqlAccessSpec);
@@ -44,7 +50,12 @@ public:
 
 private:
   ObFileSqlCsvReader reader_;
+  ObFileSqlJsonReader json_reader_;
   std::vector<std::string> row_;
+  std::vector<std::string> column_names_;
+  std::vector<bool> nulls_;
+  std::vector<std::string> glob_paths_;
+  size_t glob_index_ = 0;
 
   DISALLOW_COPY_AND_ASSIGN(ObFileSqlAccessOp);
 };

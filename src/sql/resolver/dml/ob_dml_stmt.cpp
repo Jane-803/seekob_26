@@ -166,6 +166,7 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   table_id_ = other.table_id_;
   table_name_ = other.table_name_;
   file_sql_path_ = other.file_sql_path_;
+  file_sql_format_ = other.file_sql_format_;
   alias_name_ = other.alias_name_;
   qb_name_ = other.qb_name_;
   type_ = other.type_;

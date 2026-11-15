@@ -355,7 +355,7 @@ END_P SET_VAR DELIMITER
         THEIRS TP_NAME TRACE TRADITIONAL TRANSACTION TRIGGERS TRIM TRUNCATE TYPE TYPES TASK TABLET_SIZE
         TIME_ZONE_INFO TOP_K_FRE_HIST TRIM_SPACE TABLETS TIME_UNIT TIME_ZONE
 
-        UNCOMMITTED UNCONDITIONAL UNDEFINED UNNEST READ_CSV UNICODE UNLOCKED UNTIL UPGRADE
+        UNCOMMITTED UNCONDITIONAL UNDEFINED UNNEST READ_CSV READ_JSON READ_NDJSON READ_PARQUET GLOB UNICODE UNLOCKED UNTIL UPGRADE
         UNUSUAL UNKNOWN USE_FRM USER UNBOUNDED UNLIMITED USER_SPECIFIED
 
         VALID VALUE VARIANCE VARIABLES VERBOSE VERIFY VIEW VISIBLE VALIDATE VAR_POP
@@ -497,7 +497,7 @@ END_P SET_VAR DELIMITER
 %type <node> dynamic_sampling_hint
 %type <node> skip_index_type opt_skip_index_type_list
 %type <node> vec_index_params vec_index_param vec_index_param_value opt_with_vector_index_parameters
-%type <node> json_table_expr unnest_expr file_sql_expr file_sql_arg_list file_sql_arg mock_jt_on_error_on_empty jt_column_list json_table_column_def
+%type <node> json_table_expr unnest_expr file_sql_expr file_sql_func file_sql_arg_list file_sql_arg mock_jt_on_error_on_empty jt_column_list json_table_column_def
 %type <node> json_table_ordinality_column_def json_table_exists_column_def json_table_value_column_def json_table_nested_column_def
 %type <node> opt_value_on_empty_or_error_or_mismatch opt_on_mismatch
 %type <node> table_values_clause table_values_clause_with_order_by_and_limit values_row_list row_value
@@ -17450,18 +17450,49 @@ file_sql_arg
 }
 ;
 
+file_sql_func:
+READ_CSV
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 0;
+}
+| READ_JSON
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 1;
+}
+| READ_NDJSON
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 1;
+}
+| READ_PARQUET
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 2;
+}
+| GLOB
+{
+  malloc_terminal_node($$, result->malloc_pool_, T_INT);
+  $$->value_ = 3;
+}
+;
+
 file_sql_expr:
-READ_CSV '(' file_sql_arg_list ')'
+file_sql_func '(' file_sql_arg_list ')'
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_EXPRESSION, 3, $3, NULL, NULL);
+  $$->value_ = $1->value_;
 }
-| READ_CSV '(' file_sql_arg_list ')' relation_name
+| file_sql_func '(' file_sql_arg_list ')' relation_name
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_EXPRESSION, 3, $3, $5, NULL);
+  $$->value_ = $1->value_;
 }
-| READ_CSV '(' file_sql_arg_list ')' AS relation_name
+| file_sql_func '(' file_sql_arg_list ')' AS relation_name
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_EXPRESSION, 3, $3, $6, NULL);
+  $$->value_ = $1->value_;
 }
 ;
 
@@ -17747,6 +17778,7 @@ ACCOUNT
 |       GEOMCOLLECTION
 |       GEOMETRYCOLLECTION
 |       GET_FORMAT
+|       GLOB
 |       GLOBAL %prec LOWER_PARENS
 |       GRANTS
 |       GROUPING
@@ -17973,6 +18005,10 @@ ACCOUNT
 |       QUEUE_TIME
 |       QUICK
 |       RANK
+|       READ_CSV
+|       READ_JSON
+|       READ_NDJSON
+|       READ_PARQUET
 |       READ_ONLY
 |       RECOVER
 |       RECOVERY

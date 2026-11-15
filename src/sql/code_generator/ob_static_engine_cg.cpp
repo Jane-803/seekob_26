@@ -1702,7 +1702,10 @@ int ObStaticEngineCG::generate_spec(
                  spec.file_path_))) {
   } else if (OB_FAIL(spec.column_exprs_.prepare_allocate(
                  op.get_column_exprs().count()))) {
+  } else if (OB_FAIL(spec.column_names_.prepare_allocate(
+                 op.get_column_exprs().count()))) {
   } else {
+    spec.file_format_ = op.get_file_format();
     for (int64_t i = 0;
          OB_SUCC(ret) && i < op.get_column_exprs().count();
          ++i) {
@@ -1717,6 +1720,10 @@ int ObStaticEngineCG::generate_spec(
         ret = OB_ERR_UNEXPECTED;
       } else {
         spec.column_exprs_.at(i) = expr;
+        if (OB_FAIL(ob_write_string(phy_plan_->get_allocator(),
+                                    col_expr->get_column_name(),
+                                    spec.column_names_.at(i)))) {
+        }
       }
     }
 

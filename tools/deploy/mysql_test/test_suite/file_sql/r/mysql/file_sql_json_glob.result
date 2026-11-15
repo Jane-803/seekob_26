@@ -1,0 +1,16 @@
+id	name	score	active	day	note
+1	Alice	98.5	1	NULL	NULL
+2	Bob	NULL	0	2026-08-02	NULL
+3	Chen	90	1	NULL	ok
+row_count	id_sum
+3	6
+id	name
+1	Alice
+2	Bob
+3	Chen
+file
+basic.csv
+basic.jsonl
+cache_second.csv
+invalid.txt
+simple.parquet
