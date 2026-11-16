@@ -52,3 +52,6 @@ rows_after_collision
 # COPY table source
 id	value
 1	from table
+# COPY custom CSV format round trip
+id	value	quoted
+1	a|b	a"b

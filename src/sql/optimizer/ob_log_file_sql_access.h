@@ -38,6 +38,15 @@ public:
   int64_t get_file_format() const { return file_format_; }
   void set_has_header(bool value) { has_header_ = value; }
   bool has_header() const { return has_header_; }
+  void set_csv_format(char delimiter, char quote, char escape)
+  {
+    delimiter_ = delimiter;
+    quote_ = quote;
+    escape_ = escape;
+  }
+  char delimiter() const { return delimiter_; }
+  char quote() const { return quote_; }
+  char escape() const { return escape_; }
 
   common::ObIArray<ObColumnRefRawExpr *> &get_column_exprs()
   {
@@ -114,6 +123,9 @@ private:
   common::ObString file_path_;
   int64_t file_format_;
   bool has_header_;
+  char delimiter_ = ',';
+  char quote_ = '"';
+  char escape_ = '"';
   common::ObSEArray<ObColumnRefRawExpr *, 4,
                     common::ModulePageAllocator, true> column_exprs_;
 

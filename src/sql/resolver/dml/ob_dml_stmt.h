@@ -136,6 +136,9 @@ struct TableItem
     table_id_ = common::OB_INVALID_ID;
     file_sql_format_ = 0;
     file_sql_has_header_ = true;
+    file_sql_delimiter_ = ',';
+    file_sql_quote_ = '"';
+    file_sql_escape_ = '"';
     is_index_table_ = false;
     ref_id_ = common::OB_INVALID_ID;
     ref_query_ = NULL;
@@ -275,6 +278,9 @@ struct TableItem
   common::ObString    file_sql_path_;
   int64_t             file_sql_format_;
   bool                file_sql_has_header_;
+  char                file_sql_delimiter_;
+  char                file_sql_quote_;
+  char                file_sql_escape_;
   common::ObString    alias_name_;
   common::ObString    qb_name_; // used for hint
   TableType   type_;

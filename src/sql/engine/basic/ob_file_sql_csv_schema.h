@@ -13,12 +13,14 @@ inline int infer_file_sql_csv_schema(
     std::vector<std::string> &columns,
     std::vector<ObFileSqlType> &types,
     bool has_header = true,
-    std::vector<bool> *nullable = nullptr)
+    std::vector<bool> *nullable = nullptr,
+    char delimiter = ',', char quote = '"', char escape = '"')
 {
   columns.clear();
   types.clear();
 
   ObFileSqlCsvReader reader;
+  reader.set_format(delimiter, quote, escape);
   if (reader.open(path) != 0) {
     return -1;
   }

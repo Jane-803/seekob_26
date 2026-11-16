@@ -93,6 +93,15 @@ eval copy file_sql_copy_source to '$FILE_SQL_DATA_DIR/export_table.csv'
 eval select id, value from read_csv('$FILE_SQL_DATA_DIR/export_table.csv');
 drop table file_sql_copy_source;
 
+--echo # COPY custom CSV format round trip
+eval copy (select 1 as id, 'a|b' as value, 'a"b' as quoted)
+       to '$FILE_SQL_DATA_DIR/export_custom.csv'
+       (format csv, header, delimiter '|', quote '"', escape '"');
+eval select id, value, quoted
+       from read_csv('$FILE_SQL_DATA_DIR/export_custom.csv',
+                     delimiter = '|', quote = '"')
+      order by id;
+
 set session enable_file_sql = OFF;
 --enable_query_log
 

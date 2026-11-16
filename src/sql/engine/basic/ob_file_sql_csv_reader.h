@@ -13,7 +13,15 @@ namespace sql
 class ObFileSqlCsvReader
 {
 public:
-  ObFileSqlCsvReader() : file_(nullptr), initial_stat_() {}
+  ObFileSqlCsvReader()
+    : file_(nullptr), initial_stat_(), delimiter_(','), quote_('"'), escape_('"') {}
+
+  void set_format(char delimiter, char quote, char escape)
+  {
+    delimiter_ = delimiter;
+    quote_ = quote;
+    escape_ = escape;
+  }
 
   ~ObFileSqlCsvReader()
   {
@@ -96,10 +104,16 @@ public:
       }
 
       if (in_quotes) {
-        if (ch == '"') {
+        if (escape_ != quote_ && ch == escape_) {
+          const int next = std::fgetc(file_);
+          if (next == EOF) {
+            return -1;
+          }
+          field.push_back(static_cast<char>(next));
+        } else if (ch == quote_) {
           int next = std::fgetc(file_);
-          if (next == '"') {
-            field.push_back('"');
+          if (escape_ == quote_ && next == quote_) {
+            field.push_back(quote_);
           } else {
             if (next != EOF) {
               std::ungetc(next, file_);
@@ -110,7 +124,7 @@ public:
         } else {
           field.push_back(static_cast<char>(ch));
         }
-      } else if (ch == ',') {
+      } else if (ch == delimiter_) {
         finish_field();
         if (row.size() >= 4096) {
           return -1;
@@ -124,10 +138,10 @@ public:
         }
         finish_field();
         return unchanged() ? 0 : -1;
-      } else if (ch == '"' && field.empty() && !after_quotes) {
+      } else if (ch == quote_ && field.empty() && !after_quotes) {
         in_quotes = true;
         quoted = true;
-      } else if (after_quotes || ch == '"') {
+      } else if (after_quotes || ch == quote_) {
         return -1;
       } else {
         field.push_back(static_cast<char>(ch));
@@ -143,6 +157,9 @@ private:
 
   std::FILE *file_;
   struct stat initial_stat_;
+  char delimiter_;
+  char quote_;
+  char escape_;
 
   ObFileSqlCsvReader(const ObFileSqlCsvReader &) = delete;
   ObFileSqlCsvReader &operator=(const ObFileSqlCsvReader &) = delete;

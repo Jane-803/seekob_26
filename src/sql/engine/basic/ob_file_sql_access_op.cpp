@@ -20,6 +20,7 @@ OB_SERIALIZE_MEMBER_INHERIT(ObFileSqlAccessSpec,
                             file_path_,
                             file_format_,
                             has_header_,
+                            delimiter_, quote_, escape_,
                             column_exprs_,
                             column_names_);
 
@@ -44,6 +45,7 @@ int ObFileSqlAccessOp::inner_open()
       MY_SPEC.column_names_.count() != MY_SPEC.column_exprs_.count()) {
     ret = OB_INVALID_ARGUMENT;
   } else {
+    reader_.set_format(MY_SPEC.delimiter_, MY_SPEC.quote_, MY_SPEC.escape_);
     const std::string path(
         MY_SPEC.file_path_.ptr(),
         MY_SPEC.file_path_.length());

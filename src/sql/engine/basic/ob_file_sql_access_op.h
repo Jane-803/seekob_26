@@ -23,6 +23,9 @@ public:
       file_path_(),
       file_format_(0),
       has_header_(true),
+      delimiter_(','),
+      quote_('"'),
+      escape_('"'),
       column_exprs_(alloc),
       column_names_(alloc)
   {
@@ -31,6 +34,9 @@ public:
   common::ObString file_path_;
   int64_t file_format_;
   bool has_header_;
+  char delimiter_;
+  char quote_;
+  char escape_;
   common::ObFixedArray<ObExpr *, common::ObIAllocator> column_exprs_;
   common::ObFixedArray<common::ObString, common::ObIAllocator> column_names_;
 
