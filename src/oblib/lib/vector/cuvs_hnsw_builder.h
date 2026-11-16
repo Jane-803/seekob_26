@@ -30,6 +30,8 @@ struct CuvsBuildStats {
   bool used_gpu_ = false;
   int64_t gpu_build_us_ = 0;
   int64_t graph_copy_us_ = 0;
+  uint64_t estimated_gpu_bytes_ = 0;
+  uint64_t available_gpu_bytes_ = 0;
   std::string fallback_reason_;
 };
 
@@ -39,6 +41,13 @@ class CuvsHnswBuilder {
 public:
   static bool should_attempt(int64_t rows);
   static bool is_forced();
+
+  // Conservative peak estimate, also available to CPU-only sizing tests.
+  static bool estimate_peak_gpu_bytes(int64_t rows,
+                                      int64_t dim,
+                                      int64_t graph_degree,
+                                      int64_t intermediate_degree,
+                                      uint64_t &bytes);
 
   static int build_cache(const float *vectors,
                          const int64_t *ids,

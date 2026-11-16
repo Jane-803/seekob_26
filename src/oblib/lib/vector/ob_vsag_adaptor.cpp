@@ -259,7 +259,8 @@ static int build_index_with_cuvs(HnswIndexHandler *handler,
   if (CuvsHnswBuilder::build_cache(vectors, ids, rows, dim,
                                    handler->get_max_degree(), cache, stats) != 0) {
     LOG_WARN("[OBVSAG] CUDA/cuVS graph build failed, falling back to CPU",
-             K(stats.fallback_reason_), K(rows), K(dim));
+             K(stats.fallback_reason_), K(rows), K(dim),
+             K(stats.estimated_gpu_bytes_), K(stats.available_gpu_bytes_));
     ret = CuvsHnswBuilder::is_forced() ? OB_ERR_UNEXPECTED : handler->build_index(base);
   } else {
     cache.seekg(0);
@@ -276,6 +277,7 @@ static int build_index_with_cuvs(HnswIndexHandler *handler,
           std::chrono::steady_clock::now() - vsag_start).count();
       LOG_INFO("[OBVSAG] HNSW graph initialized with CUDA/cuVS",
                K(rows), K(dim), K(stats.gpu_build_us_), K(stats.graph_copy_us_),
+               K(stats.estimated_gpu_bytes_), K(stats.available_gpu_bytes_),
                K(vsag_build_us), K(ret));
     }
   }

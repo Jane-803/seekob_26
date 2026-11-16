@@ -83,6 +83,51 @@ bool CuvsHnswBuilder::is_forced()
   return is_cuda_backend(backend_setting());
 }
 
+bool CuvsHnswBuilder::estimate_peak_gpu_bytes(int64_t rows,
+                                               int64_t dim,
+                                               int64_t graph_degree,
+                                               int64_t intermediate_degree,
+                                               uint64_t &bytes)
+{
+  bytes = 0;
+  if (rows <= 0 || dim <= 0 || graph_degree <= 0 || intermediate_degree < graph_degree) {
+    return false;
+  }
+
+  const uint64_t row_count = static_cast<uint64_t>(rows);
+  const uint64_t dimension = static_cast<uint64_t>(dim);
+  const uint64_t output_degree = static_cast<uint64_t>(graph_degree);
+  const uint64_t working_degree = static_cast<uint64_t>(intermediate_degree);
+  const uint64_t max_value = std::numeric_limits<uint64_t>::max();
+  if (dimension > max_value / sizeof(float) ||
+      working_degree > max_value / (2 * sizeof(uint32_t)) ||
+      output_degree > max_value / sizeof(uint32_t)) {
+    return false;
+  }
+
+  const uint64_t vector_bytes_per_row = dimension * sizeof(float);
+  const uint64_t working_bytes_per_row = working_degree * 2 * sizeof(uint32_t);
+  const uint64_t output_bytes_per_row = output_degree * sizeof(uint32_t);
+  if (vector_bytes_per_row > max_value / row_count ||
+      working_bytes_per_row > max_value / row_count ||
+      output_bytes_per_row > max_value / row_count) {
+    return false;
+  }
+
+  const uint64_t vector_bytes = row_count * vector_bytes_per_row;
+  const uint64_t working_bytes = row_count * working_bytes_per_row;
+  const uint64_t output_bytes = row_count * output_bytes_per_row;
+  const uint64_t workspace_bytes = 512ULL * 1024 * 1024;
+  if (vector_bytes > max_value / 2 ||
+      working_bytes > (max_value - 2 * vector_bytes) / 2 ||
+      output_bytes > max_value - 2 * vector_bytes - 2 * working_bytes ||
+      workspace_bytes > max_value - 2 * vector_bytes - 2 * working_bytes - output_bytes) {
+    return false;
+  }
+  bytes = 2 * vector_bytes + 2 * working_bytes + output_bytes + workspace_bytes;
+  return true;
+}
+
 int CuvsHnswBuilder::serialize_cache(const int64_t *ids,
                                      int64_t rows,
                                      int64_t degree,
@@ -135,7 +180,8 @@ int CuvsHnswBuilder::build_cache(const float *vectors,
                                  CuvsBuildStats &stats)
 {
   stats.attempted_ = true;
-  if (vectors == nullptr || ids == nullptr || rows <= 1 || dim <= 0 || max_degree <= 0) {
+  if (vectors == nullptr || ids == nullptr || rows < 64 || dim <= 0 || max_degree <= 0 ||
+      static_cast<uint64_t>(rows) > std::numeric_limits<uint32_t>::max()) {
     stats.fallback_reason_ = "invalid CUDA/cuVS build input";
     return -1;
   }
@@ -146,10 +192,49 @@ int CuvsHnswBuilder::build_cache(const float *vectors,
   return -1;
 #else
   try {
+    const uint32_t graph_degree = static_cast<uint32_t>(std::min<int64_t>(max_degree, rows - 1));
+    const uint64_t padded_intermediate_degree = std::max<uint64_t>(
+        ((static_cast<uint64_t>(graph_degree) * 2 + 31) / 32) * 32, 64);
+    if (padded_intermediate_degree > std::numeric_limits<uint32_t>::max()) {
+      stats.fallback_reason_ = "cuVS graph degree exceeds supported limits";
+      return -1;
+    }
+    const uint32_t intermediate_degree = static_cast<uint32_t>(padded_intermediate_degree);
+    if (intermediate_degree >= static_cast<uint64_t>(rows)) {
+      stats.fallback_reason_ = "dataset is too small for the configured cuVS graph degree";
+      return -1;
+    }
+    if (!estimate_peak_gpu_bytes(rows, dim, graph_degree, intermediate_degree,
+                                 stats.estimated_gpu_bytes_)) {
+      stats.fallback_reason_ = "CUDA/cuVS peak memory estimate overflowed";
+      return -1;
+    }
+
+    size_t free_bytes = 0;
+    size_t total_bytes = 0;
+    const cudaError_t memory_info_result = cudaMemGetInfo(&free_bytes, &total_bytes);
+    if (memory_info_result != cudaSuccess) {
+      stats.fallback_reason_ = cudaGetErrorString(memory_info_result);
+      return -1;
+    }
+    const uint64_t safety_reserve = std::max<uint64_t>(
+        512ULL * 1024 * 1024, static_cast<uint64_t>(total_bytes) / 10);
+    stats.available_gpu_bytes_ = free_bytes > safety_reserve
+                                     ? static_cast<uint64_t>(free_bytes) - safety_reserve
+                                     : 0;
+    if (stats.estimated_gpu_bytes_ > stats.available_gpu_bytes_) {
+      stats.fallback_reason_ = "estimated cuVS peak memory exceeds the available GPU budget";
+      return -1;
+    }
+
     raft::resources resources;
     cuvs::neighbors::cagra::index_params params;
-    params.graph_degree = static_cast<uint32_t>(std::min<int64_t>(max_degree, rows - 1));
-    params.intermediate_graph_degree = std::max<uint32_t>(params.graph_degree * 2, 64);
+    params.graph_degree = graph_degree;
+    params.intermediate_graph_degree = intermediate_degree;
+    auto graph_params = cuvs::neighbors::cagra::graph_build_params::nn_descent_params(
+        params.intermediate_graph_degree);
+    graph_params.return_distances = false;
+    params.graph_build_params = graph_params;
     params.attach_dataset_on_build = false;
     auto dataset = raft::make_host_matrix_view<const float, int64_t>(vectors, rows, dim);
     const auto stream = raft::resource::get_cuda_stream(resources);

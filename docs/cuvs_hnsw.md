@@ -16,6 +16,7 @@ the normal seekdb Bazel invocation:
 ```bash
 bazel build //src/... \
   --cxxopt=-DOB_USE_CUVS \
+  --cxxopt=-std=c++17 \
   --cxxopt=-I/usr/local/cuda/include \
   --cxxopt=-I/opt/rapids/include \
   --linkopt=-L/usr/local/cuda/lib64 \
@@ -24,8 +25,11 @@ bazel build //src/... \
   --linkopt=-lcudart
 ```
 
-Adjust the cuVS include and library paths for the selected package. The code
-uses the public `cuvs::neighbors::cagra` C++ API and RAFT resource/stream types.
+Adjust the cuVS include and library paths and any package-specific transitive
+link dependencies for the selected package. The code uses the public
+`cuvs::neighbors::cagra` C++ API and RAFT resource/stream types. The graph
+parameter configuration is compatible with the cuVS 26.10 C++ API; compile
+against matching cuVS/RAFT headers and libraries.
 VSAG must provide `Index::ImportCache` and `Dataset::SourceID`, as the dependency
 version in the competition branch does.
 
@@ -39,9 +43,21 @@ Set `SEEKDB_HNSW_BUILD_BACKEND` before starting seekdb:
 | `cpu` | Always use the original VSAG CPU build. |
 | `cuda` or `cuvs` | Require CUDA/cuVS. An unavailable GPU, rejected cache, or build error fails the operation. |
 
-`SEEKDB_CUVS_MIN_ROWS` changes the `auto` threshold. Acceleration is limited to
-dense FP32/L2 HNSW and HGraph indexes. Sparse, quantized, inner-product, and
-cosine indexes keep the CPU path so metric semantics cannot silently change.
+`SEEKDB_CUVS_MIN_ROWS` changes the `auto` threshold. The graph builder is
+explicitly configured for cuVS NN-Descent, with distance output disabled and
+the intermediate degree rounded up to a multiple of 32. Before building, seekdb
+estimates peak GPU memory for two FP32 dataset buffers (input staging), two
+working-graph buffers, the output graph, and a 512 MiB workspace. It also
+reserves at least 512 MiB or 10%
+of device memory, whichever is larger. `auto` falls back to CPU if the estimated
+peak does not fit; forced GPU mode fails with the estimated and available budget
+in the log instead of proceeding toward an OOM. The estimate is conservative,
+but should still be checked against peak-memory telemetry on the target cuVS
+release and GPU.
+
+Acceleration is limited to dense FP32/L2 HNSW and HGraph indexes. Sparse,
+quantized, inner-product, and cosine indexes keep the CPU path so metric
+semantics cannot silently change.
 
 Successful GPU builds log `HNSW graph initialized with CUDA/cuVS`, including row
 count, dimension, GPU graph-build time, device-to-host copy time, and final VSAG
