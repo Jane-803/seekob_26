@@ -74,6 +74,9 @@ public:
     return column_exprs_;
   }
 
+  common::ObIArray<int64_t> &get_projected_columns() { return projected_columns_; }
+  const common::ObIArray<int64_t> &get_projected_columns() const { return projected_columns_; }
+
   virtual int est_cost() override
   {
     set_card(1000.0);
@@ -150,6 +153,7 @@ private:
   int64_t file_ctime_ns_ = 0;
   common::ObSEArray<ObColumnRefRawExpr *, 4,
                     common::ModulePageAllocator, true> column_exprs_;
+  common::ObSEArray<int64_t, 4, common::ModulePageAllocator, true> projected_columns_;
 
   DISALLOW_COPY_AND_ASSIGN(ObLogFileSqlAccess);
 };

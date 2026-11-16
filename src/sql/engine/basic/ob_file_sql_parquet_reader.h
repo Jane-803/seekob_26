@@ -20,6 +20,8 @@ public:
   ObFileSqlParquetReader() : handle_(nullptr), check_fd_(-1), initial_stat_() {}
   ~ObFileSqlParquetReader() { close(); }
 
+  void set_projection(const std::vector<int64_t> &projection) { projection_ = projection; }
+
   int open(const char *path)
   {
     close();
@@ -36,7 +38,7 @@ public:
       close();
       return -1;
     }
-    handle_ = fs_parquet_open_fd(read_fd);
+    handle_ = fs_parquet_open_fd(read_fd, projection_.data(), projection_.size());
     if (handle_ == nullptr) {
       close();
       return -1;
@@ -123,17 +125,19 @@ public:
       return status == 1 && unchanged() ? 1 : -1;
     }
     row.assign(columns_.size(), std::string());
-    nulls.assign(columns_.size(), false);
-    for (size_t i = 0; i < columns_.size(); ++i) {
+    nulls.assign(columns_.size(), true);
+    const size_t value_count = projection_.empty() ? columns_.size() : projection_.size();
+    for (size_t i = 0; i < value_count; ++i) {
+      const size_t column_index = projection_.empty() ? i : static_cast<size_t>(projection_[i]);
       const int64_t length = fs_parquet_value_len(handle_, static_cast<int64_t>(i));
       if (length == -1) {
-        nulls[i] = true;
       } else if (length < 0 || length > 16 * 1024 * 1024) {
         return -1;
       } else {
-        row[i].resize(static_cast<size_t>(length));
+        nulls[column_index] = false;
+        row[column_index].resize(static_cast<size_t>(length));
         if (length > 0 && fs_parquet_value_copy(handle_, static_cast<int64_t>(i),
-                                                 row[i].data(), row[i].size()) != 0) {
+                                                 row[column_index].data(), row[column_index].size()) != 0) {
           return -1;
         }
       }
@@ -166,6 +170,7 @@ private:
   std::vector<std::string> columns_;
   std::vector<ObFileSqlType> types_;
   std::vector<bool> nullable_;
+  std::vector<int64_t> projection_;
 
   ObFileSqlParquetReader(const ObFileSqlParquetReader &) = delete;
   ObFileSqlParquetReader &operator=(const ObFileSqlParquetReader &) = delete;

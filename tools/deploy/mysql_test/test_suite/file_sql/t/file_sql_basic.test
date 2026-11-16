@@ -48,6 +48,19 @@ eval select count(*) AS row_count, min(c1) AS min_c1,
             max(c1) AS max_c1, sum(c1) AS sum_c1
        from read_parquet('$FILE_SQL_DATA_DIR/simple.parquet') p;
 
+--echo # Parquet projection keeps original column positions across row groups
+eval select score from read_parquet('$FILE_SQL_DATA_DIR/projection.parquet')
+      order by score;
+eval select count(*) as row_count
+       from read_parquet('$FILE_SQL_DATA_DIR/projection.parquet');
+eval select sum(score) as score_sum, count(*) as row_count
+       from read_parquet('$FILE_SQL_DATA_DIR/projection.parquet')
+      where id >= 2;
+eval select p.score, c.name
+       from read_parquet('$FILE_SQL_DATA_DIR/projection.parquet') p
+       left join read_csv('$FILE_SQL_DATA_DIR/basic.csv') c on p.id = c.id
+      order by p.id;
+
 --echo # DuckDB glob returns one file column
 eval select substring_index(file, '/', -1) AS file
        from glob('$FILE_SQL_DATA_DIR/*')

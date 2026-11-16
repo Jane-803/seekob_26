@@ -24,6 +24,7 @@ OB_SERIALIZE_MEMBER_INHERIT(ObFileSqlAccessSpec,
                             file_device_, file_inode_, file_size_,
                             file_mtime_ns_, file_ctime_ns_,
                             column_exprs_,
+                            projected_columns_,
                             column_names_);
 
 ObFileSqlAccessOp::ObFileSqlAccessOp(
@@ -50,6 +51,11 @@ int ObFileSqlAccessOp::inner_open()
     reader_.set_format(MY_SPEC.delimiter_, MY_SPEC.quote_, MY_SPEC.escape_);
     reader_.set_nullstr(std::string(MY_SPEC.nullstr_.empty() ? "" : MY_SPEC.nullstr_.ptr(),
                                    MY_SPEC.nullstr_.length()));
+    std::vector<int64_t> projection;
+    for (int64_t i = 0; i < MY_SPEC.projected_columns_.count(); ++i) {
+      projection.push_back(MY_SPEC.projected_columns_.at(i));
+    }
+    parquet_reader_.set_projection(projection);
     const std::string path(
         MY_SPEC.file_path_.ptr(),
         MY_SPEC.file_path_.length());

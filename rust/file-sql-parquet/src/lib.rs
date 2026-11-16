@@ -5,6 +5,7 @@ use parquet::basic::{ConvertedType, Type as PhysicalType};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use parquet::record::reader::RowIter;
 use parquet::record::Field;
+use parquet::schema::types::Type;
 use std::ffi::c_void;
 use std::fs::File;
 use std::os::fd::FromRawFd;
@@ -20,6 +21,7 @@ struct Handle {
     columns: Vec<Column>,
     rows: RowIter<'static>,
     current: Option<Vec<Option<Vec<u8>>>>,
+    value_count: usize,
 }
 
 fn column_kind(physical: PhysicalType, converted: ConvertedType) -> Option<i32> {
@@ -106,7 +108,9 @@ fn field_text(field: &Field) -> Option<Option<Vec<u8>>> {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn fs_parquet_open_fd(fd: i32) -> *mut c_void {
+pub unsafe extern "C" fn fs_parquet_open_fd(
+    fd: i32, projection: *const i64, projection_len: usize,
+) -> *mut c_void {
     if fd < 0 {
         return ptr::null_mut();
     }
@@ -135,8 +139,42 @@ pub unsafe extern "C" fn fs_parquet_open_fd(fd: i32) -> *mut c_void {
             nullable: descriptor.max_def_level() > 0,
         });
     }
+    let projected_schema = if projection_len == 0 {
+        None
+    } else {
+        if projection.is_null() || projection_len > columns.len() {
+            return ptr::null_mut();
+        }
+        let selected = unsafe { std::slice::from_raw_parts(projection, projection_len) };
+        let fields = schema.root_schema().get_fields();
+        let mut projected_fields = Vec::with_capacity(selected.len());
+        let mut previous = -1;
+        for &index in selected {
+            if index <= previous || index < 0 || index as usize >= fields.len() {
+                return ptr::null_mut();
+            }
+            projected_fields.push(fields[index as usize].clone());
+            previous = index;
+        }
+        let projected_schema = match Type::group_type_builder(schema.root_schema().name())
+            .with_fields(projected_fields)
+            .build()
+        {
+            Ok(projected_schema) => projected_schema,
+            Err(_) => return ptr::null_mut(),
+        };
+        Some(projected_schema)
+    };
     let rows = RowIter::from_file_into(Box::new(reader));
-    Box::into_raw(Box::new(Handle { columns, rows, current: None })).cast()
+    let rows = match projected_schema {
+        Some(projection) => match rows.project(Some(projection)) {
+            Ok(projected_rows) => projected_rows,
+            Err(_) => return ptr::null_mut(),
+        },
+        None => rows,
+    };
+    let value_count = if projection_len == 0 { columns.len() } else { projection_len };
+    Box::into_raw(Box::new(Handle { columns, rows, current: None, value_count })).cast()
 }
 
 #[no_mangle]
@@ -204,14 +242,14 @@ pub unsafe extern "C" fn fs_parquet_next(handle: *mut c_void) -> i32 {
         Some(Err(_)) => return -1,
         None => return 1,
     };
-    let mut values = Vec::with_capacity(handle.columns.len());
+    let mut values = Vec::new();
     for (_, field) in row.get_column_iter() {
         let Some(value) = field_text(field) else {
             return -1;
         };
         values.push(value);
     }
-    if values.len() != handle.columns.len() {
+    if values.len() != handle.value_count {
         return -1;
     }
     handle.current = Some(values);
@@ -268,7 +306,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("seekdb-parquet-{}.parquet", std::process::id()));
         std::fs::write(&path, bytes).unwrap();
         let fd = File::open(&path).unwrap().into_raw_fd();
-        let handle = unsafe { fs_parquet_open_fd(fd) };
+        let handle = unsafe { fs_parquet_open_fd(fd, ptr::null(), 0) };
         assert!(!handle.is_null());
         assert_eq!(unsafe { fs_parquet_column_count(handle) }, 1);
         assert_eq!(unsafe { fs_parquet_column_type(handle, 0) }, 2);
@@ -290,7 +328,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "seekdb-parquet-multi-{}.parquet", std::process::id()
         ));
-        let schema = Arc::new(parse_message_type("message schema { OPTIONAL INT32 value; }").unwrap());
+        let schema = Arc::new(parse_message_type(
+            "message schema { OPTIONAL INT32 value; REQUIRED INT32 other; }",
+        ).unwrap());
         let properties = Arc::new(
             WriterProperties::builder()
                 .set_compression(Compression::SNAPPY)
@@ -298,18 +338,24 @@ mod tests {
         );
         let file = File::create(&path).unwrap();
         let mut writer = SerializedFileWriter::new(file, schema, properties).unwrap();
-        for (values, levels) in [(&[1][..], &[1, 0][..]), (&[2][..], &[1][..])] {
+        for (values, levels, others) in [
+            (&[1][..], &[1, 0][..], &[10, 11][..]),
+            (&[2][..], &[1][..], &[20][..]),
+        ] {
             let mut group = writer.next_row_group().unwrap();
             let mut column = group.next_column().unwrap().unwrap();
             column.typed::<Int32Type>().write_batch(values, Some(levels), None).unwrap();
+            column.close().unwrap();
+            let mut column = group.next_column().unwrap().unwrap();
+            column.typed::<Int32Type>().write_batch(others, None, None).unwrap();
             column.close().unwrap();
             group.close().unwrap();
         }
         writer.close().unwrap();
 
-        let handle = unsafe { fs_parquet_open_fd(File::open(&path).unwrap().into_raw_fd()) };
+        let handle = unsafe { fs_parquet_open_fd(File::open(&path).unwrap().into_raw_fd(), ptr::null(), 0) };
         assert!(!handle.is_null());
-        assert_eq!(unsafe { fs_parquet_column_count(handle) }, 1);
+        assert_eq!(unsafe { fs_parquet_column_count(handle) }, 2);
         assert_eq!(unsafe { fs_parquet_column_nullable(handle, 0) }, 1);
         assert_eq!(unsafe { fs_parquet_next(handle) }, 0);
         assert_eq!(unsafe { fs_parquet_value_len(handle, 0) }, 1);
@@ -317,6 +363,21 @@ mod tests {
         assert_eq!(unsafe { fs_parquet_value_len(handle, 0) }, -1);
         assert_eq!(unsafe { fs_parquet_next(handle) }, 0);
         assert_eq!(unsafe { fs_parquet_value_len(handle, 0) }, 1);
+        assert_eq!(unsafe { fs_parquet_next(handle) }, 1);
+        unsafe { fs_parquet_close(handle) };
+
+        let projection = [1_i64];
+        let handle = unsafe { fs_parquet_open_fd(
+            File::open(&path).unwrap().into_raw_fd(), projection.as_ptr(), projection.len(),
+        ) };
+        assert!(!handle.is_null());
+        for expected in ["10", "11", "20"] {
+            assert_eq!(unsafe { fs_parquet_next(handle) }, 0);
+            let len = unsafe { fs_parquet_value_len(handle, 0) };
+            let mut value = vec![0; len as usize];
+            assert_eq!(unsafe { fs_parquet_value_copy(handle, 0, value.as_mut_ptr(), value.len()) }, 0);
+            assert_eq!(value, expected.as_bytes());
+        }
         assert_eq!(unsafe { fs_parquet_next(handle) }, 1);
         unsafe { fs_parquet_close(handle) };
         std::fs::remove_file(path).unwrap();

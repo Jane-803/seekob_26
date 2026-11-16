@@ -27,6 +27,21 @@ id__2	BIGINT	NO	NULL	NULL	NULL
 # Parquet scan and aggregate push through projected columns
 row_count	min_c1	max_c1	sum_c1
 7	0	6	21
+# Parquet projection keeps original column positions across row groups
+score
+10
+20
+30
+40
+row_count
+4
+score_sum	row_count
+90	3
+score	name
+10	Alice
+20	Bob
+30	Chen
+40	NULL
 # DuckDB glob returns one file column
 file
 basic.csv

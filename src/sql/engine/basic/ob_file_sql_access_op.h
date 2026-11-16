@@ -30,6 +30,7 @@ public:
       file_device_(0), file_inode_(0), file_size_(0),
       file_mtime_ns_(0), file_ctime_ns_(0),
       column_exprs_(alloc),
+      projected_columns_(alloc),
       column_names_(alloc)
   {
   }
@@ -47,6 +48,7 @@ public:
   int64_t file_mtime_ns_;
   int64_t file_ctime_ns_;
   common::ObFixedArray<ObExpr *, common::ObIAllocator> column_exprs_;
+  common::ObFixedArray<int64_t, common::ObIAllocator> projected_columns_;
   common::ObFixedArray<common::ObString, common::ObIAllocator> column_names_;
 
 private:

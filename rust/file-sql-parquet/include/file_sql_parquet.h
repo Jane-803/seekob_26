@@ -8,7 +8,8 @@ extern "C" {
 #endif
 
 /* open_fd consumes fd, including when the file is invalid. */
-void *fs_parquet_open_fd(int fd);
+/* Empty projection reads all columns. Indices are in file schema order. */
+void *fs_parquet_open_fd(int fd, const int64_t *projection, size_t projection_len);
 void fs_parquet_close(void *handle);
 int64_t fs_parquet_column_count(const void *handle);
 int64_t fs_parquet_column_name_len(const void *handle, int64_t index);

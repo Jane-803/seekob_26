@@ -17,6 +17,7 @@
 #define USING_LOG_PREFIX SQL_OPT
 #include "config_bridge.h"
 #include "sql/optimizer/ob_log_file_sql_access.h"
+#include "sql/engine/basic/ob_file_sql_format.h"
 #include "ob_log_plan.h"
 #include "sql/optimizer/ob_pwj_comparer.h"
 #include "sql/optimizer/stat/ob_opt_stat_manager.h"
@@ -11844,7 +11845,28 @@ int ObLogPlan::allocate_file_sql_path(
             file_path->table_id_, column_exprs))) {
     } else if (OB_FAIL(
                    file_op->get_column_exprs().assign(column_exprs))) {
-    } else if (OB_FAIL(
+    } else if (table_item->file_sql_format_ == FILE_SQL_PARQUET) {
+      ObSEArray<ObRawExpr *, 16> relation_exprs;
+      ObSEArray<ObRawExpr *, 16> needed_columns;
+      if (OB_FAIL(get_stmt()->get_relation_exprs(relation_exprs))) {
+      } else if (OB_FAIL(ObRawExprUtils::extract_column_exprs(
+                     relation_exprs, file_path->table_id_, needed_columns))) {
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < column_exprs.count(); ++i) {
+          bool needed = false;
+          for (int64_t j = 0; !needed && j < needed_columns.count(); ++j) {
+            needed = needed_columns.at(j) == column_exprs.at(i);
+          }
+          if (needed && OB_FAIL(file_op->get_projected_columns().push_back(i))) {
+          }
+        }
+        if (OB_SUCC(ret) && file_op->get_projected_columns().empty() &&
+            !column_exprs.empty()) {
+          ret = file_op->get_projected_columns().push_back(0);
+        }
+      }
+    }
+    if (OB_SUCC(ret) && OB_FAIL(
                    append(file_op->get_filter_exprs(),
                           file_path->filter_))) {
     } else if (OB_FAIL(file_op->compute_property(file_path))) {

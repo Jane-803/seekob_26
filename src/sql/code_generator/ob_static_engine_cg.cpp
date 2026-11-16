@@ -1702,6 +1702,8 @@ int ObStaticEngineCG::generate_spec(
                  spec.file_path_))) {
   } else if (OB_FAIL(spec.column_exprs_.prepare_allocate(
                  op.get_column_exprs().count()))) {
+  } else if (OB_FAIL(spec.projected_columns_.prepare_allocate(
+                 op.get_projected_columns().count()))) {
   } else if (OB_FAIL(spec.column_names_.prepare_allocate(
                  op.get_column_exprs().count()))) {
   } else {
@@ -1716,6 +1718,9 @@ int ObStaticEngineCG::generate_spec(
     spec.file_size_ = op.file_size();
     spec.file_mtime_ns_ = op.file_mtime_ns();
     spec.file_ctime_ns_ = op.file_ctime_ns();
+    for (int64_t i = 0; i < op.get_projected_columns().count(); ++i) {
+      spec.projected_columns_.at(i) = op.get_projected_columns().at(i);
+    }
     for (int64_t i = 0;
          OB_SUCC(ret) && i < op.get_column_exprs().count();
          ++i) {
