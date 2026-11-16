@@ -12,7 +12,8 @@ inline int infer_file_sql_csv_schema(
     const char *path,
     std::vector<std::string> &columns,
     std::vector<ObFileSqlType> &types,
-    bool has_header = true)
+    bool has_header = true,
+    std::vector<bool> *nullable = nullptr)
 {
   columns.clear();
   types.clear();
@@ -39,6 +40,9 @@ inline int infer_file_sql_csv_schema(
 
   deduplicate_csv_columns(columns);
   types.assign(columns.size(), ObFileSqlType::NULL_VALUE);
+  if (nullable != nullptr) {
+    nullable->assign(columns.size(), false);
+  }
 
   std::vector<std::string> row;
   std::vector<bool> nulls;
@@ -52,6 +56,9 @@ inline int infer_file_sql_csv_schema(
     for (size_t i = 0; i < row.size(); ++i) {
       types[i] = merge_csv_types(types[i], nulls[i] ? ObFileSqlType::NULL_VALUE
           : row[i].empty() ? ObFileSqlType::STRING : infer_csv_value(row[i]));
+      if (nullable != nullptr && nulls[i]) {
+        (*nullable)[i] = true;
+      }
     }
   }
 
@@ -62,6 +69,9 @@ inline int infer_file_sql_csv_schema(
   for (size_t i = 0; i < types.size(); ++i) {
     if (types[i] == ObFileSqlType::NULL_VALUE) {
       types[i] = ObFileSqlType::STRING;
+      if (nullable != nullptr) {
+        (*nullable)[i] = true;
+      }
     }
   }
 

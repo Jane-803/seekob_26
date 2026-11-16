@@ -20,6 +20,11 @@
 #include "sql/resolver/ob_resolver_utils.h"
 #include "sql/resolver/cmd/ob_show_table_status_sql.h"
 #include "sql/printer/ob_schema_printer.h"
+#include "sql/engine/basic/ob_file_sql_csv_schema.h"
+#include "sql/engine/basic/ob_file_sql_json_reader.h"
+#include "sql/engine/basic/ob_file_sql_parquet_reader.h"
+#include "sql/engine/basic/ob_file_sql_format.h"
+#include <string>
 
 using namespace oceanbase::common;
 using namespace oceanbase::share;
@@ -37,6 +42,28 @@ ObShowResolver::ObShowResolver(ObResolverParams &params)
 
 ObShowResolver::~ObShowResolver()
 {
+}
+
+static const char *file_sql_describe_type(ObFileSqlType type)
+{
+  switch (type) {
+    case ObFileSqlType::BOOLEAN: return "BOOLEAN";
+    case ObFileSqlType::INTEGER: return "BIGINT";
+    case ObFileSqlType::DOUBLE: return "DOUBLE";
+    case ObFileSqlType::DATE: return "DATE";
+    case ObFileSqlType::DATETIME: return "DATETIME";
+    default: return "VARCHAR";
+  }
+}
+
+static int append_file_sql_describe_name(ObSqlString &sql, const std::string &name)
+{
+  int ret = sql.append("CAST(0x");
+  for (unsigned char ch : name) {
+    if (OB_SUCC(ret)) ret = sql.append_fmt("%02X", ch);
+  }
+  if (OB_SUCC(ret)) ret = sql.append(" AS CHAR)");
+  return ret;
 }
 
 #define GEN_SQL_STEP_1(SHOW_STMT_TYPE, args...)                         \
@@ -150,7 +177,8 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
             && OB_UNLIKELY(parse_tree.type_ != T_SHOW_ENGINE)
             && OB_UNLIKELY(parse_tree.type_ != T_SHOW_OPEN_TABLES)
             && OB_UNLIKELY(parse_tree.type_ != T_SHOW_CREATE_USER)
-            && OB_UNLIKELY(parse_tree.type_ != T_SHOW_CHECK_TABLE)) {
+            && OB_UNLIKELY(parse_tree.type_ != T_SHOW_CHECK_TABLE)
+            && OB_UNLIKELY(parse_tree.type_ != T_FILE_SQL_DESCRIBE)) {
     ret = OB_ERR_UNEXPECTED;
   } else {
     real_id = 1;
@@ -180,6 +208,83 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
     stmt_need_privs.need_privs_.set_allocator(&alloc);
     ObSqlStrGenerator sql_gen;
     switch (parse_tree.type_) {
+      case T_FILE_SQL_DESCRIBE: {
+        if (parse_tree.num_child_ != 1 || parse_tree.children_ == NULL ||
+            parse_tree.children_[0] == NULL) {
+          ret = OB_INVALID_ARGUMENT;
+        } else {
+          ObSelectResolver child_resolver(params_);
+          if (OB_FAIL(child_resolver.resolve(*parse_tree.children_[0]))) {
+          } else {
+            ObSelectStmt *child_stmt = child_resolver.get_select_stmt();
+            if (child_stmt == NULL || child_stmt->get_table_size() != 1 ||
+                child_stmt->get_table_item(0) == NULL ||
+                !child_stmt->get_table_item(0)->is_file_sql_table()) {
+              ret = OB_NOT_SUPPORTED;
+            } else {
+              const TableItem *table = child_stmt->get_table_item(0);
+              const std::string path(table->file_sql_path_.ptr(),
+                                     table->file_sql_path_.length());
+              std::vector<std::string> names;
+              std::vector<ObFileSqlType> types;
+              std::vector<bool> nullable;
+              int status = -1;
+              switch (table->file_sql_format_) {
+                case FILE_SQL_CSV:
+                  status = infer_file_sql_csv_schema(path.c_str(), names, types,
+                      table->file_sql_has_header_, &nullable);
+                  break;
+                case FILE_SQL_JSONL:
+                  status = infer_file_sql_json_schema(path.c_str(), names, types, &nullable);
+                  break;
+                case FILE_SQL_PARQUET:
+                  status = infer_file_sql_parquet_schema(path.c_str(), names, types, &nullable);
+                  break;
+                case FILE_SQL_GLOB:
+                  names.push_back("file");
+                  types.push_back(ObFileSqlType::STRING);
+                  nullable.push_back(false);
+                  status = 0;
+                  break;
+                default:
+                  break;
+              }
+              if (status != 0 || names.empty() || names.size() != types.size() ||
+                  names.size() != nullable.size()) {
+                ret = OB_ERR_UNEXPECTED;
+              } else if (child_stmt->get_select_item_size() !=
+                         static_cast<int64_t>(names.size())) {
+                ret = OB_NOT_SUPPORTED;
+              } else {
+                ObSqlString sql;
+                if (OB_FAIL(sql.append(
+                        "SELECT column_name, column_type, `null`, `key`, `default`, "
+                        "extra FROM ("))) {
+                }
+                for (size_t i = 0; OB_SUCC(ret) && i < names.size(); ++i) {
+                  if (OB_FAIL(sql.append(i == 0 ? "SELECT " : " UNION ALL SELECT "))) {
+                  } else if (OB_FAIL(append_file_sql_describe_name(sql, names[i]))) {
+                  } else if (OB_FAIL(sql.append_fmt(
+                                 " AS column_name, '%s' AS column_type, '%s' AS `null`, "
+                                 "NULL AS `key`, NULL AS `default`, NULL AS extra, "
+                                 "%zu AS _file_sql_order",
+                                 file_sql_describe_type(types[i]),
+                                 nullable[i] ? "YES" : "NO", i))) {
+                  }
+                }
+                if (OB_SUCC(ret) && OB_FAIL(sql.append(
+                        ") AS file_sql_schema ORDER BY _file_sql_order"))) {
+                }
+                if (OB_SUCC(ret) && OB_FAIL(ob_write_string(
+                        *params_.allocator_, sql.string(), select_sql))) {
+                }
+              }
+            }
+          }
+          show_resv_ctx.stmt_type_ = stmt::T_SHOW_COLUMNS;
+        }
+        break;
+      }
       case T_SHOW_TABLES: {
         if (OB_UNLIKELY(parse_tree.num_child_ != 3 || NULL == parse_tree.children_)) {
           ret = OB_ERR_UNEXPECTED;
@@ -1150,6 +1255,12 @@ int ObShowResolver::resolve(const ParseNode &parse_tree)
     } else {
       ObSelectStmt *select_stmt = static_cast<ObSelectStmt*>(stmt_);
       select_stmt->set_is_from_show_stmt(true);
+      if (parse_tree.type_ == T_FILE_SQL_DESCRIBE &&
+          OB_NOT_NULL(select_stmt->get_query_ctx())) {
+        ObQueryHint &query_hint = select_stmt->get_query_ctx()->get_query_hint_for_update();
+        ObGlobalHint &global_hint = const_cast<ObGlobalHint&>(query_hint.get_global_hint());
+        global_hint.merge_plan_cache_hint(OB_USE_PLAN_CACHE_NONE);
+      }
       if (OB_NOT_NULL(select_stmt->get_query_ctx())) {
         select_stmt->get_query_ctx()->set_literal_stmt_type(show_resv_ctx.stmt_type_);
       }

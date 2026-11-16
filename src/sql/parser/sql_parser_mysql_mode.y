@@ -52,6 +52,16 @@
   } \
   malloc_non_terminal_node(explain_stmt, result->malloc_pool_, T_EXPLAIN, 5, \
                            type_node, display_node, into_table, set_statement_id, stmt);
+
+static bool contains_file_sql_expression(const ParseNode *node, int depth)
+{
+  if (node == NULL || depth > 256) return false;
+  if (node->type_ == T_FILE_SQL_EXPRESSION) return true;
+  for (int i = 0; i < node->num_child_; ++i) {
+    if (contains_file_sql_expression(node->children_[i], depth + 1)) return true;
+  }
+  return false;
+}
 %}
 
 %destructor {destroy_tree($$);}<node>
@@ -12269,7 +12279,15 @@ explain_or_desc relation_factor opt_desc_column_option
   malloc_non_terminal_node($$, result->malloc_pool_, T_SHOW_COLUMNS, 4, $$, $2, NULL, $3);
 }
 
-| explain_or_desc explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);}
+| explain_or_desc explainable_stmt
+{
+  if ($1->value_ == 1 && $2->type_ == T_SELECT &&
+      contains_file_sql_expression($2, 0)) {
+    malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_DESCRIBE, 1, $2);
+  } else {
+    GEN_EXPLAN_STMT($1, $$, 0, 0, $2, NULL, NULL);
+  }
+}
 | explain_or_desc PRETTY explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY, $3, NULL, NULL);}
 | explain_or_desc PRETTY_COLOR explainable_stmt { GEN_EXPLAN_STMT($1, $$, 0, T_PRETTY_COLOR, $3, NULL, NULL);}
 
@@ -12309,9 +12327,9 @@ explain_or_desc relation_factor opt_desc_column_option
 ;
 
 explain_or_desc:
-EXPLAIN {$$ = NULL;}
-| DESCRIBE {$$ = NULL;}
-| DESC  {$$ = NULL;}
+EXPLAIN { malloc_terminal_node($$, result->malloc_pool_, T_INT); $$->value_ = 0; }
+| DESCRIBE { malloc_terminal_node($$, result->malloc_pool_, T_INT); $$->value_ = 1; }
+| DESC  { malloc_terminal_node($$, result->malloc_pool_, T_INT); $$->value_ = 1; }
 ;
 
 explainable_stmt:

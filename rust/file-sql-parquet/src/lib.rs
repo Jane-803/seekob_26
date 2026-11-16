@@ -13,6 +13,7 @@ use std::ptr;
 struct Column {
     name: Vec<u8>,
     kind: i32,
+    nullable: bool,
 }
 
 struct Handle {
@@ -131,6 +132,7 @@ pub unsafe extern "C" fn fs_parquet_open_fd(fd: i32) -> *mut c_void {
         columns.push(Column {
             name: descriptor.name().as_bytes().to_vec(),
             kind,
+            nullable: descriptor.max_def_level() > 0,
         });
     }
     let rows = RowIter::from_file_into(Box::new(reader));
@@ -182,6 +184,13 @@ pub unsafe extern "C" fn fs_parquet_column_type(handle: *const c_void, index: i6
     unsafe { handle.cast::<Handle>().as_ref() }
         .and_then(|handle| column(handle, index))
         .map_or(-1, |column| column.kind)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn fs_parquet_column_nullable(handle: *const c_void, index: i64) -> i32 {
+    unsafe { handle.cast::<Handle>().as_ref() }
+        .and_then(|handle| column(handle, index))
+        .map_or(-1, |column| i32::from(column.nullable))
 }
 
 #[no_mangle]
@@ -263,6 +272,7 @@ mod tests {
         assert!(!handle.is_null());
         assert_eq!(unsafe { fs_parquet_column_count(handle) }, 1);
         assert_eq!(unsafe { fs_parquet_column_type(handle, 0) }, 2);
+        assert_eq!(unsafe { fs_parquet_column_nullable(handle, 0) }, 1);
         for i in 0..7 {
             assert_eq!(unsafe { fs_parquet_next(handle) }, 0);
             let len = unsafe { fs_parquet_value_len(handle, 0) };
@@ -300,6 +310,7 @@ mod tests {
         let handle = unsafe { fs_parquet_open_fd(File::open(&path).unwrap().into_raw_fd()) };
         assert!(!handle.is_null());
         assert_eq!(unsafe { fs_parquet_column_count(handle) }, 1);
+        assert_eq!(unsafe { fs_parquet_column_nullable(handle, 0) }, 1);
         assert_eq!(unsafe { fs_parquet_next(handle) }, 0);
         assert_eq!(unsafe { fs_parquet_value_len(handle, 0) }, 1);
         assert_eq!(unsafe { fs_parquet_next(handle) }, 0);

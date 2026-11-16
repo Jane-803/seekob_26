@@ -154,16 +154,19 @@ private:
 };
 
 inline int infer_file_sql_json_schema(const char *path,
-    std::vector<std::string> &columns, std::vector<ObFileSqlType> &types)
+    std::vector<std::string> &columns, std::vector<ObFileSqlType> &types,
+    std::vector<bool> *nullable = nullptr)
 {
   columns.clear();
   types.clear();
+  if (nullable != nullptr) nullable->clear();
   ObFileSqlJsonReader reader;
   if (reader.open(path) != 0) {
     return -1;
   }
   rapidjson::Document doc;
   int status = 0;
+  int64_t document_count = 0;
   while ((status = reader.next_document(doc)) == 0) {
     std::vector<std::string> row_names;
     for (auto it = doc.MemberBegin(); it != doc.MemberEnd(); ++it) {
@@ -185,18 +188,29 @@ inline int infer_file_sql_json_schema(const char *path,
         }
         columns.push_back(name);
         types.push_back(ObFileSqlType::NULL_VALUE);
+        if (nullable != nullptr) nullable->push_back(document_count > 0);
         found = columns.end() - 1;
       }
       const size_t index = static_cast<size_t>(found - columns.begin());
       types[index] = merge_csv_types(types[index], ObFileSqlJsonReader::infer_type(it->value));
+      if (nullable != nullptr && it->value.IsNull()) (*nullable)[index] = true;
     }
+    if (nullable != nullptr) {
+      for (size_t i = 0; i < columns.size(); ++i) {
+        if (std::find(row_names.begin(), row_names.end(), columns[i]) == row_names.end()) {
+          (*nullable)[i] = true;
+        }
+      }
+    }
+    ++document_count;
   }
   if (status != 1 || columns.empty()) {
     return -1;
   }
-  for (auto &type : types) {
-    if (type == ObFileSqlType::NULL_VALUE) {
-      type = ObFileSqlType::STRING;
+  for (size_t i = 0; i < types.size(); ++i) {
+    if (types[i] == ObFileSqlType::NULL_VALUE) {
+      types[i] = ObFileSqlType::STRING;
+      if (nullable != nullptr) (*nullable)[i] = true;
     }
   }
   return 0;

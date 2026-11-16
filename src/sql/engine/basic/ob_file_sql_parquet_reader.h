@@ -50,10 +50,13 @@ public:
     }
     columns_.clear();
     types_.clear();
+    nullable_.clear();
     for (int64_t i = 0; i < count; ++i) {
       const int64_t length = fs_parquet_column_name_len(handle_, i);
       const int kind = fs_parquet_column_type(handle_, i);
-      if (length <= 0 || length > 65535 || kind < 0 || kind > 6) {
+      const int nullable = fs_parquet_column_nullable(handle_, i);
+      if (length <= 0 || length > 65535 || kind < 0 || kind > 6 ||
+          nullable < 0 || nullable > 1) {
         close();
         return -1;
       }
@@ -66,6 +69,7 @@ public:
       }
       columns_.push_back(name);
       types_.push_back(static_cast<ObFileSqlType>(kind));
+      nullable_.push_back(nullable == 1);
     }
     return 0;
   }
@@ -83,6 +87,7 @@ public:
     path_.clear();
     columns_.clear();
     types_.clear();
+    nullable_.clear();
   }
 
   int rescan()
@@ -138,6 +143,7 @@ public:
 
   const std::vector<std::string> &columns() const { return columns_; }
   const std::vector<ObFileSqlType> &types() const { return types_; }
+  const std::vector<bool> &nullable() const { return nullable_; }
 
 private:
   bool unchanged() const
@@ -159,13 +165,15 @@ private:
   std::string path_;
   std::vector<std::string> columns_;
   std::vector<ObFileSqlType> types_;
+  std::vector<bool> nullable_;
 
   ObFileSqlParquetReader(const ObFileSqlParquetReader &) = delete;
   ObFileSqlParquetReader &operator=(const ObFileSqlParquetReader &) = delete;
 };
 
 inline int infer_file_sql_parquet_schema(const char *path,
-    std::vector<std::string> &columns, std::vector<ObFileSqlType> &types)
+    std::vector<std::string> &columns, std::vector<ObFileSqlType> &types,
+    std::vector<bool> *nullable = nullptr)
 {
   ObFileSqlParquetReader reader;
   if (reader.open(path) != 0) {
@@ -173,6 +181,7 @@ inline int infer_file_sql_parquet_schema(const char *path,
   }
   columns = reader.columns();
   types = reader.types();
+  if (nullable != nullptr) *nullable = reader.nullable();
   return 0;
 }
 
