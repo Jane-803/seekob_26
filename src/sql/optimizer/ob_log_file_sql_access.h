@@ -49,6 +49,20 @@ public:
   char escape() const { return escape_; }
   void set_nullstr(const common::ObString &value) { nullstr_ = value; }
   const common::ObString &nullstr() const { return nullstr_; }
+  void set_file_stat(int64_t device, int64_t inode, int64_t size,
+                     int64_t mtime_ns, int64_t ctime_ns)
+  {
+    file_device_ = device;
+    file_inode_ = inode;
+    file_size_ = size;
+    file_mtime_ns_ = mtime_ns;
+    file_ctime_ns_ = ctime_ns;
+  }
+  int64_t file_device() const { return file_device_; }
+  int64_t file_inode() const { return file_inode_; }
+  int64_t file_size() const { return file_size_; }
+  int64_t file_mtime_ns() const { return file_mtime_ns_; }
+  int64_t file_ctime_ns() const { return file_ctime_ns_; }
 
   common::ObIArray<ObColumnRefRawExpr *> &get_column_exprs()
   {
@@ -129,6 +143,11 @@ private:
   char quote_ = '"';
   char escape_ = '"';
   common::ObString nullstr_;
+  int64_t file_device_ = 0;
+  int64_t file_inode_ = 0;
+  int64_t file_size_ = 0;
+  int64_t file_mtime_ns_ = 0;
+  int64_t file_ctime_ns_ = 0;
   common::ObSEArray<ObColumnRefRawExpr *, 4,
                     common::ModulePageAllocator, true> column_exprs_;
 

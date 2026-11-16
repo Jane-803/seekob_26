@@ -3785,7 +3785,16 @@ int ObDMLResolver::resolve_file_sql_item(
     if (OB_SUCC(ret)) {
       std::vector<std::string> csv_columns;
       std::vector<ObFileSqlType> csv_types;
-      const int schema_ret = table_node.value_ == FILE_SQL_CSV
+      struct stat inferred_stat = {};
+      struct stat checked_stat = {};
+      int schema_ret = 0;
+      if (table_node.value_ != FILE_SQL_GLOB &&
+          (::stat(full_path_buf, &inferred_stat) != 0 ||
+           !S_ISREG(inferred_stat.st_mode))) {
+        schema_ret = -1;
+      }
+      if (schema_ret == 0) {
+        schema_ret = table_node.value_ == FILE_SQL_CSV
           ? infer_file_sql_csv_schema(full_path_buf, csv_columns, csv_types,
                                       csv_has_header, nullptr,
                                       csv_delimiter, csv_quote, csv_escape,
@@ -3796,6 +3805,18 @@ int ObDMLResolver::resolve_file_sql_item(
               : table_node.value_ == FILE_SQL_PARQUET
                   ? infer_file_sql_parquet_schema(full_path_buf, csv_columns, csv_types)
               : table_node.value_ == FILE_SQL_GLOB ? 0 : -1;
+      }
+      if (schema_ret == 0 && table_node.value_ != FILE_SQL_GLOB &&
+          (::stat(full_path_buf, &checked_stat) != 0 ||
+           checked_stat.st_dev != inferred_stat.st_dev ||
+           checked_stat.st_ino != inferred_stat.st_ino ||
+           checked_stat.st_size != inferred_stat.st_size ||
+           checked_stat.st_mtim.tv_sec != inferred_stat.st_mtim.tv_sec ||
+           checked_stat.st_mtim.tv_nsec != inferred_stat.st_mtim.tv_nsec ||
+           checked_stat.st_ctim.tv_sec != inferred_stat.st_ctim.tv_sec ||
+           checked_stat.st_ctim.tv_nsec != inferred_stat.st_ctim.tv_nsec)) {
+        schema_ret = -1;
+      }
       if (table_node.value_ == FILE_SQL_GLOB) {
         csv_columns.push_back("file");
         csv_types.push_back(ObFileSqlType::STRING);
@@ -3843,6 +3864,15 @@ int ObDMLResolver::resolve_file_sql_item(
             new_item->file_sql_quote_ = csv_quote;
             new_item->file_sql_escape_ = csv_escape;
             new_item->file_sql_nullstr_ = csv_nullstr;
+            if (table_node.value_ != FILE_SQL_GLOB) {
+              new_item->file_sql_device_ = static_cast<int64_t>(inferred_stat.st_dev);
+              new_item->file_sql_inode_ = static_cast<int64_t>(inferred_stat.st_ino);
+              new_item->file_sql_size_ = inferred_stat.st_size;
+              new_item->file_sql_mtime_ns_ =
+                  inferred_stat.st_mtim.tv_sec * 1000000000LL + inferred_stat.st_mtim.tv_nsec;
+              new_item->file_sql_ctime_ns_ =
+                  inferred_stat.st_ctim.tv_sec * 1000000000LL + inferred_stat.st_ctim.tv_nsec;
+            }
             new_item->is_view_table_ = false;
 
             if (OB_FAIL(stmt->add_table_item(session_info_, new_item))) {

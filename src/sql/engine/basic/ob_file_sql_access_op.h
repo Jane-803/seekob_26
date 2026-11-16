@@ -27,6 +27,8 @@ public:
       quote_('"'),
       escape_('"'),
       nullstr_(),
+      file_device_(0), file_inode_(0), file_size_(0),
+      file_mtime_ns_(0), file_ctime_ns_(0),
       column_exprs_(alloc),
       column_names_(alloc)
   {
@@ -39,6 +41,11 @@ public:
   char quote_;
   char escape_;
   common::ObString nullstr_;
+  int64_t file_device_;
+  int64_t file_inode_;
+  int64_t file_size_;
+  int64_t file_mtime_ns_;
+  int64_t file_ctime_ns_;
   common::ObFixedArray<ObExpr *, common::ObIAllocator> column_exprs_;
   common::ObFixedArray<common::ObString, common::ObIAllocator> column_names_;
 

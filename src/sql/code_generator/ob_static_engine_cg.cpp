@@ -1711,6 +1711,11 @@ int ObStaticEngineCG::generate_spec(
     spec.quote_ = op.quote();
     spec.escape_ = op.escape();
     spec.nullstr_ = op.nullstr();
+    spec.file_device_ = op.file_device();
+    spec.file_inode_ = op.file_inode();
+    spec.file_size_ = op.file_size();
+    spec.file_mtime_ns_ = op.file_mtime_ns();
+    spec.file_ctime_ns_ = op.file_ctime_ns();
     for (int64_t i = 0;
          OB_SUCC(ret) && i < op.get_column_exprs().count();
          ++i) {

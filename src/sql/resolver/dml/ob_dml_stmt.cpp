@@ -172,6 +172,11 @@ int TableItem::deep_copy(ObIRawExprCopier &expr_copier,
   file_sql_quote_ = other.file_sql_quote_;
   file_sql_escape_ = other.file_sql_escape_;
   file_sql_nullstr_ = other.file_sql_nullstr_;
+  file_sql_device_ = other.file_sql_device_;
+  file_sql_inode_ = other.file_sql_inode_;
+  file_sql_size_ = other.file_sql_size_;
+  file_sql_mtime_ns_ = other.file_sql_mtime_ns_;
+  file_sql_ctime_ns_ = other.file_sql_ctime_ns_;
   alias_name_ = other.alias_name_;
   qb_name_ = other.qb_name_;
   type_ = other.type_;

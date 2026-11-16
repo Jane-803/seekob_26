@@ -5,6 +5,14 @@ let $FILE_SQL_DATA_DIR = $OBSERVER_DIR/data_for_mysqltest_file_sql;
 set session enable_file_sql = ON;
 
 eval select count(*) as row_count from read_csv('$FILE_SQL_DATA_DIR/basic.csv');
+
+let $FILE_SQL_STAGE_CMD = ssh $FILE_SQL_HOST 'cp "$FILE_SQL_DATA_DIR/basic.csv" "$FILE_SQL_DATA_DIR/mutable.csv"';
+exec $FILE_SQL_STAGE_CMD;
+eval prepare file_sql_change_stmt from "select count(*) as row_count from read_csv('$FILE_SQL_DATA_DIR/mutable.csv')";
+let $FILE_SQL_REPLACE_CMD = ssh $FILE_SQL_HOST 'cp "$FILE_SQL_DATA_DIR/cache_second.csv" "$FILE_SQL_DATA_DIR/mutable.csv"';
+exec $FILE_SQL_REPLACE_CMD;
+execute file_sql_change_stmt;
+deallocate prepare file_sql_change_stmt;
 eval select id, value is null as is_null, length(value) as value_len
        from read_csv('$FILE_SQL_DATA_DIR/csv_nulls.csv') order by id;
 eval select value from read_csv('$FILE_SQL_DATA_DIR/numeric_boundaries.csv')

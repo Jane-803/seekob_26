@@ -140,6 +140,11 @@ struct TableItem
     file_sql_quote_ = '"';
     file_sql_escape_ = '"';
     file_sql_nullstr_.reset();
+    file_sql_device_ = 0;
+    file_sql_inode_ = 0;
+    file_sql_size_ = 0;
+    file_sql_mtime_ns_ = 0;
+    file_sql_ctime_ns_ = 0;
     is_index_table_ = false;
     ref_id_ = common::OB_INVALID_ID;
     ref_query_ = NULL;
@@ -283,6 +288,11 @@ struct TableItem
   char                file_sql_quote_;
   char                file_sql_escape_;
   common::ObString    file_sql_nullstr_;
+  int64_t             file_sql_device_;
+  int64_t             file_sql_inode_;
+  int64_t             file_sql_size_;
+  int64_t             file_sql_mtime_ns_;
+  int64_t             file_sql_ctime_ns_;
   common::ObString    alias_name_;
   common::ObString    qb_name_; // used for hint
   TableType   type_;

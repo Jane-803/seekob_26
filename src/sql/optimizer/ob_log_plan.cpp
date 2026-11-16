@@ -11834,6 +11834,9 @@ int ObLogPlan::allocate_file_sql_path(
     file_op->set_csv_format(table_item->file_sql_delimiter_,
                             table_item->file_sql_quote_, table_item->file_sql_escape_);
     file_op->set_nullstr(table_item->file_sql_nullstr_);
+    file_op->set_file_stat(table_item->file_sql_device_, table_item->file_sql_inode_,
+                           table_item->file_sql_size_, table_item->file_sql_mtime_ns_,
+                           table_item->file_sql_ctime_ns_);
 
     ObSEArray<ObColumnRefRawExpr *, 4> column_exprs;
 

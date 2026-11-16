@@ -21,6 +21,8 @@ OB_SERIALIZE_MEMBER_INHERIT(ObFileSqlAccessSpec,
                             file_format_,
                             has_header_,
                             delimiter_, quote_, escape_, nullstr_,
+                            file_device_, file_inode_, file_size_,
+                            file_mtime_ns_, file_ctime_ns_,
                             column_exprs_,
                             column_names_);
 
@@ -52,7 +54,23 @@ int ObFileSqlAccessOp::inner_open()
         MY_SPEC.file_path_.ptr(),
         MY_SPEC.file_path_.length());
 
-    if (MY_SPEC.file_format_ == FILE_SQL_GLOB) {
+    if (MY_SPEC.file_format_ != FILE_SQL_GLOB) {
+      struct stat current;
+      if (::stat(path.c_str(), &current) != 0) {
+        ret = OB_FILE_NOT_EXIST;
+      } else if (static_cast<int64_t>(current.st_dev) != MY_SPEC.file_device_ ||
+                 static_cast<int64_t>(current.st_ino) != MY_SPEC.file_inode_ ||
+                 current.st_size != MY_SPEC.file_size_ ||
+                 current.st_mtim.tv_sec * 1000000000LL + current.st_mtim.tv_nsec !=
+                     MY_SPEC.file_mtime_ns_ ||
+                 current.st_ctim.tv_sec * 1000000000LL + current.st_ctim.tv_nsec !=
+                     MY_SPEC.file_ctime_ns_) {
+        ret = OB_IO_ERROR;
+      }
+    }
+
+    if (OB_FAIL(ret)) {
+    } else if (MY_SPEC.file_format_ == FILE_SQL_GLOB) {
       glob_paths_.clear();
       glob_index_ = 0;
       glob_t matches = {};
