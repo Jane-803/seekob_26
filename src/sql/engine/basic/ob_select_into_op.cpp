@@ -89,6 +89,7 @@ int ObSelectIntoOp::init_csv_env()
   if (OB_ISNULL(session = ctx_.get_my_session())) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(init_env_common())) {
+  } else if (MY_SPEC.is_copy_ && OB_FAIL(resolve_copy_csv_options())) {
   } else if (OB_FAIL(prepare_escape_printer())) {
   } else {
     if (external_properties_.csv_format_.compression_algorithm_ != CsvCompressType::NONE) {
@@ -118,15 +119,56 @@ int ObSelectIntoOp::init_csv_env()
   return ret;
 }
 
+int ObSelectIntoOp::resolve_copy_csv_options()
+{
+  int ret = OB_SUCCESS;
+  ObPhysicalPlanCtx *plan_ctx = ctx_.get_physical_plan_ctx();
+  ObObj delimiter = MY_SPEC.field_str_;
+  ObObj quote = MY_SPEC.closed_cht_;
+  ObObj escape = MY_SPEC.escaped_cht_;
+  bool need_check = false;
+  if (OB_ISNULL(plan_ctx)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    ObObj *options[] = {&delimiter, &quote, &escape};
+    for (int64_t i = 0; OB_SUCC(ret) && i < 3; ++i) {
+      if (options[i]->is_unknown()) {
+        ObObj resolved;
+        if (OB_FAIL(ObSQLUtils::get_param_value(*options[i], plan_ctx->get_param_store(),
+                                                resolved, need_check))) {
+        } else {
+          *options[i] = resolved;
+        }
+      }
+    }
+  }
+  if (OB_FAIL(ret)) {
+  } else if (!delimiter.is_string_type() || !quote.is_string_type() ||
+             !escape.is_string_type() || delimiter.get_string().length() != 1 ||
+             quote.get_string().length() != 1 || escape.get_string().length() != 1 ||
+             delimiter.get_string().ptr()[0] == '\0' || quote.get_string().ptr()[0] == '\0' ||
+             escape.get_string().ptr()[0] == '\0' ||
+             delimiter.get_string().ptr()[0] == quote.get_string().ptr()[0]) {
+    ret = OB_INVALID_ARGUMENT;
+  } else {
+    field_str_ = delimiter;
+    has_enclose_ = true;
+    char_enclose_ = quote.get_string().ptr()[0];
+    has_escape_ = true;
+    char_escape_ = escape.get_string().ptr()[0];
+  }
+  return ret;
+}
+
 void ObSelectIntoOp::set_csv_format_options()
 {
   if (MY_SPEC.external_properties_.str_.empty()) {
     field_str_ = MY_SPEC.field_str_;
     line_str_ = MY_SPEC.line_str_;
-    has_enclose_ = MY_SPEC.closed_cht_.get_val_len() > 0;
+    has_enclose_ = !MY_SPEC.closed_cht_.is_unknown() && MY_SPEC.closed_cht_.get_val_len() > 0;
     char_enclose_ = has_enclose_ ? MY_SPEC.closed_cht_.get_char().ptr()[0] : 0;
     is_optional_ = MY_SPEC.is_optional_;
-    has_escape_ = MY_SPEC.escaped_cht_.get_val_len() > 0;
+    has_escape_ = !MY_SPEC.escaped_cht_.is_unknown() && MY_SPEC.escaped_cht_.get_val_len() > 0;
     char_escape_ = has_escape_ ? MY_SPEC.escaped_cht_.get_char().ptr()[0] : 0;
     cs_type_ = MY_SPEC.cs_type_;
   } else {

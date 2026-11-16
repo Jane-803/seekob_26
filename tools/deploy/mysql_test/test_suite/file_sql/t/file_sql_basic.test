@@ -63,6 +63,36 @@ eval select id, name, score
        from read_csv('$FILE_SQL_DATA_DIR/export.csv')
       order by id;
 
+--echo # COPY NULL handling and destination collision
+eval copy (select 1 as id, cast(null as char) as note
+           union all select 2, 'a,b')
+       to '$FILE_SQL_DATA_DIR/export_null.csv'
+       (format csv, header);
+eval select id, note is null as is_null
+       from read_csv('$FILE_SQL_DATA_DIR/export_null.csv')
+      order by id;
+--error 9101
+eval copy (select 3 as id) to '$FILE_SQL_DATA_DIR/export_null.csv'
+       (format csv, header);
+eval select count(*) as rows_after_collision
+       from read_csv('$FILE_SQL_DATA_DIR/export_null.csv');
+
+--echo # COPY CSV option validation
+--error 1210
+eval copy (select 1 as id) to '$FILE_SQL_DATA_DIR/invalid_copy.csv'
+       (format csv, delimiter '::');
+--error 1210
+eval copy (select 1 as id) to '$FILE_SQL_DATA_DIR/invalid_copy.csv'
+       (format csv, quote '::');
+
+--echo # COPY table source
+create table file_sql_copy_source(id bigint primary key, value varchar(30));
+insert into file_sql_copy_source values (1, 'from table');
+eval copy file_sql_copy_source to '$FILE_SQL_DATA_DIR/export_table.csv'
+       (format csv, header);
+eval select id, value from read_csv('$FILE_SQL_DATA_DIR/export_table.csv');
+drop table file_sql_copy_source;
+
 set session enable_file_sql = OFF;
 --enable_query_log
 

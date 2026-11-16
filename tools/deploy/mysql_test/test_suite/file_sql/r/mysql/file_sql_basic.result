@@ -42,3 +42,13 @@ id	name	score
 1	Alice	98.5
 2	Bob	87
 3	Chen	90.25
+# COPY NULL handling and destination collision
+id	is_null
+1	1
+2	0
+rows_after_collision
+2
+# COPY CSV option validation
+# COPY table source
+id	value
+1	from table

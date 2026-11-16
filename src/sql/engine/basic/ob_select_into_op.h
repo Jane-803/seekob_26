@@ -206,6 +206,7 @@ public:
 private:
   int init_env_common();
   int init_csv_env();
+  int resolve_copy_csv_options();
   void set_csv_format_options();
 
   int get_row_str(const int64_t buf_len, bool is_first_row, char *buf, int64_t &pos);

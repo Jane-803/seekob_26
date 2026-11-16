@@ -8480,6 +8480,28 @@ COPY '(' select_stmt ')' TO STRING_VALUE '(' copy_option_list ')'
       $6, NULL, NULL, NULL, NULL, options);
   $$ = $3;
 }
+| COPY relation_factor TO STRING_VALUE '(' copy_option_list ')'
+{
+  ParseNode *star = NULL;
+  ParseNode *project = NULL;
+  ParseNode *project_list = NULL;
+  ParseNode *table = NULL;
+  ParseNode *from_list = NULL;
+  ParseNode *options = NULL;
+  malloc_terminal_node(star, result->malloc_pool_, T_STAR);
+  malloc_non_terminal_node(project, result->malloc_pool_, T_PROJECT_STRING, 1, star);
+  project->str_value_ = parse_strdup("*", result->malloc_pool_, &project->str_len_);
+  malloc_non_terminal_node(project_list, result->malloc_pool_, T_PROJECT_LIST, 1, project);
+  malloc_non_terminal_node(table, result->malloc_pool_, T_ORG, 4, $2, NULL, NULL, NULL);
+  malloc_non_terminal_node(from_list, result->malloc_pool_, T_FROM_LIST, 1, table);
+  malloc_select_node($$, result->malloc_pool_);
+  $$->children_[PARSE_SELECT_SELECT] = project_list;
+  $$->children_[PARSE_SELECT_FROM] = from_list;
+  merge_nodes(options, result, T_EXPR_LIST, $6);
+  malloc_non_terminal_node($$->children_[PARSE_SELECT_INTO_EXTRA],
+      result->malloc_pool_, T_INTO_OUTFILE, 6,
+      $4, NULL, NULL, NULL, NULL, options);
+}
 ;
 
 copy_option_list:
@@ -8505,6 +8527,11 @@ FORMAT NAME_OB
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_COPY_OPTION, 2, $1, $2);
   $$->value_ = 3;
+}
+| ESCAPE STRING_VALUE
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_COPY_OPTION, 1, $2);
+  $$->value_ = 4;
 }
 ;
 
