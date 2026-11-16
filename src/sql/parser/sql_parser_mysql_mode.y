@@ -383,6 +383,7 @@ END_P SET_VAR DELIMITER
 //-----------------------------non_reserved keyword end---------------------------------------------
 %type <node> sql_stmt stmt_list stmt opt_end_p
 %type <node> select_stmt update_stmt delete_stmt
+%type <node> copy_stmt copy_option copy_option_list
 %type <node> insert_stmt single_table_insert values_clause dml_table_name
 %type <node> create_table_stmt create_table_like_stmt fork_table_stmt fork_database_stmt diff_table_stmt merge_table_stmt opt_table_option_list table_option_list table_option table_option_list_space_seperated parallel_option lob_storage_clause lob_storage_parameter lob_storage_parameters lob_chunk_size
 %type <node> index_or_heap
@@ -566,6 +567,7 @@ opt_end_p:
 /* only preparable statement will set question mark size */
 stmt:
     select_stmt             { $$ = $1; question_mark_issue($$, result); }
+  | copy_stmt               { $$ = $1; question_mark_issue($$, result); }
   | insert_stmt             { $$ = $1; question_mark_issue($$, result); }
   | create_table_stmt       {
     $$ = $1;
@@ -8460,6 +8462,49 @@ select_no_parens opt_when
 | with_select
 {
   $$ = $1;
+}
+;
+
+copy_stmt:
+COPY '(' select_stmt ')' TO STRING_VALUE '(' copy_option_list ')'
+{
+  ParseNode *options = NULL;
+  merge_nodes(options, result, T_EXPR_LIST, $8);
+  if ($3->type_ != T_SELECT || $3->children_[PARSE_SELECT_INTO] != NULL ||
+      $3->children_[PARSE_SELECT_INTO_EXTRA] != NULL) {
+    yyerror(&@3, result, "COPY requires a SELECT without INTO");
+    YYERROR;
+  }
+  malloc_non_terminal_node($3->children_[PARSE_SELECT_INTO_EXTRA],
+      result->malloc_pool_, T_INTO_OUTFILE, 6,
+      $6, NULL, NULL, NULL, NULL, options);
+  $$ = $3;
+}
+;
+
+copy_option_list:
+copy_option { $$ = $1; }
+| copy_option_list ',' copy_option
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+;
+
+copy_option:
+FORMAT NAME_OB
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_COPY_OPTION, 1, $2);
+  $$->value_ = 1;
+}
+| NAME_OB
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_COPY_OPTION, 1, $1);
+  $$->value_ = 2;
+}
+| NAME_OB STRING_VALUE
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_FILE_SQL_COPY_OPTION, 2, $1, $2);
+  $$->value_ = 3;
 }
 ;
 

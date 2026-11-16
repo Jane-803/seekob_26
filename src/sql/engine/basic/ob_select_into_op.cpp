@@ -18,6 +18,8 @@
 
 #include <cmath>
 #include <memory>
+#include <cerrno>
+#include <unistd.h>
 
 #include "ob_select_into_op.h"
 #include "sql/engine/cmd/ob_variable_set_executor.h"
@@ -38,7 +40,7 @@ OB_SERIALIZE_MEMBER(ObSelectIntoOpInput, task_id_, sqc_id_);
 OB_SERIALIZE_MEMBER((ObSelectIntoSpec, ObOpSpec), into_type_, user_vars_, outfile_name_,
     field_str_, line_str_, closed_cht_, is_optional_, select_exprs_, is_single_, max_file_size_,
     escaped_cht_, cs_type_, parallel_, buffer_size_, is_overwrite_,
-    external_properties_);
+    external_properties_, is_copy_, copy_header_, copy_nullstr_, copy_column_names_);
 
 
 int ObSelectIntoOp::inner_open()
@@ -157,12 +159,19 @@ int ObSelectIntoOp::init_env_common()
   ObPhysicalPlanCtx *phy_plan_ctx = NULL;
   bool need_check = false;
   file_name_ = MY_SPEC.outfile_name_;
+  copy_nullstr_value_ = MY_SPEC.copy_nullstr_;
   if (OB_ISNULL(phy_plan_ctx = ctx_.get_physical_plan_ctx())) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(ObSQLUtils::get_param_value(MY_SPEC.outfile_name_,
                                                  phy_plan_ctx->get_param_store(),
                                                  file_name_,
                                                  need_check))) {
+  } else if (MY_SPEC.is_copy_ && MY_SPEC.copy_nullstr_.is_unknown() &&
+             OB_FAIL(ObSQLUtils::get_param_value(MY_SPEC.copy_nullstr_,
+                                                 phy_plan_ctx->get_param_store(),
+                                                 copy_nullstr_value_, need_check))) {
+  } else if (MY_SPEC.is_copy_ && !copy_nullstr_value_.is_varying_len_char_type()) {
+    ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(calc_outfile_path())) {
   } else if (OB_FAIL(check_has_lob_or_json())) {
   } else if (has_coll_ && MY_SPEC.into_type_ == T_INTO_VARIABLES) {
@@ -183,6 +192,20 @@ int ObSelectIntoOp::calc_outfile_path()
   }
   if (OB_SUCC(ret) && (T_INTO_OUTFILE == into_type || T_INTO_DUMPFILE == into_type)
       && OB_FAIL(check_secure_file_path(basic_url_))) {
+  }
+  if (OB_SUCC(ret) && MY_SPEC.is_copy_) {
+    copy_target_url_ = basic_url_;
+    ObSqlString temp_path;
+    if (0 == access(copy_target_url_.ptr(), F_OK)) {
+      ret = OB_FILE_OR_DIRECTORY_EXIST;
+    } else if (errno != ENOENT) {
+      ret = OB_IO_ERROR;
+    } else if (OB_FAIL(temp_path.append_fmt("%.*s.copy.%ld.%ld.tmp",
+                                            copy_target_url_.length(), copy_target_url_.ptr(),
+                                            static_cast<int64_t>(getpid()),
+                                            ObTimeUtility::current_time()))) {
+    } else if (OB_FAIL(ob_write_string(ctx_.get_allocator(), temp_path.string(), basic_url_, true))) {
+    }
   }
   return ret;
 }
@@ -326,6 +349,16 @@ int ObSelectIntoOp::inner_close()
 {
   int ret = OB_SUCCESS;
   if (OB_NOT_NULL(data_writer_) && OB_FAIL(data_writer_->close_data_writer())) {
+  }
+  if (MY_SPEC.is_copy_ && !basic_url_.empty()) {
+    if (OB_SUCC(ret) && need_commit_) {
+      if (0 != link(basic_url_.ptr(), copy_target_url_.ptr())) {
+        ret = errno == EEXIST ? OB_FILE_OR_DIRECTORY_EXIST : OB_IO_ERROR;
+      }
+    }
+    if (0 != unlink(basic_url_.ptr()) && errno != ENOENT && OB_SUCC(ret)) {
+      ret = OB_IO_ERROR;
+    }
   }
   return ret;
 }
@@ -943,6 +976,38 @@ int ObSelectIntoOp::print_field(const ObObj &obj, ObCsvFileWriter &data_writer)
   return ret;
 }
 
+int ObSelectIntoOp::write_copy_field(const ObObj &obj, ObCsvFileWriter &data_writer)
+{
+  int ret = OB_SUCCESS;
+  if (obj.is_null()) {
+    ObObj value;
+    value.set_varchar(copy_nullstr_value_.get_varchar());
+    value.set_collation_type(cs_type_);
+    if (OB_FAIL(write_obj_to_file(value, data_writer, true))) {
+    }
+  } else if (OB_FAIL(print_field(obj, data_writer))) {
+  }
+  return ret;
+}
+
+int ObSelectIntoOp::write_copy_header(ObCsvFileWriter &data_writer)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.copy_column_names_.count(); ++i) {
+    ObObj name;
+    name.set_varchar(MY_SPEC.copy_column_names_.at(i));
+    name.set_collation_type(cs_type_);
+    if (OB_FAIL(print_field(name, data_writer))) {
+    } else if (i + 1 < MY_SPEC.copy_column_names_.count() &&
+               OB_FAIL(write_obj_to_file(field_str_, data_writer))) {
+    }
+  }
+  if (OB_SUCC(ret) && OB_FAIL(write_obj_to_file(line_str_, data_writer))) {
+  } else if (OB_SUCC(ret) && OB_FAIL(data_writer.flush_shared_buf(shared_buf_))) {
+  }
+  return ret;
+}
+
 int ObSelectIntoOp::into_outfile(ObExternalFileWriter *data_writer)
 {
   int ret = OB_SUCCESS;
@@ -959,11 +1024,16 @@ int ObSelectIntoOp::into_outfile(ObExternalFileWriter *data_writer)
     } else if (OB_FAIL(select_exprs.at(i)->eval(eval_ctx_, datum))) {
     } else if (OB_ISNULL(datum)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (MY_SPEC.is_copy_ && datum->is_null()) {
+      ObObj null_value;
+      null_value.set_null();
+      OZ(write_copy_field(null_value, *csv_data_writer));
     } else if (OB_FAIL(datum->to_obj(obj,
                                      select_exprs.at(i)->obj_meta_,
                                      select_exprs.at(i)->obj_datum_map_))) {
     } else if (!ob_is_text_tc(select_exprs.at(i)->obj_meta_.get_type()) || obj.is_null()) {
-      OZ(print_field(obj, *csv_data_writer));
+      OZ(MY_SPEC.is_copy_ ? write_copy_field(obj, *csv_data_writer)
+                          : print_field(obj, *csv_data_writer));
     } else { // text tc
       OZ(print_lob_field(obj, *select_exprs.at(i), *datum, *csv_data_writer));
     }
@@ -1010,11 +1080,16 @@ int ObSelectIntoOp::into_outfile_batch_csv(const ObBatchRows &brs, ObExternalFil
       for (int64_t col_idx = 0; OB_SUCC(ret) && col_idx < select_exprs.count(); ++col_idx) {
         if (OB_ISNULL(datum = datum_vectors.at(col_idx).at(i))) {
           ret = OB_ERR_UNEXPECTED;
+        } else if (MY_SPEC.is_copy_ && datum->is_null()) {
+          ObObj null_value;
+          null_value.set_null();
+          OZ(write_copy_field(null_value, *csv_data_writer));
         } else if (OB_FAIL(datum->to_obj(obj,
                                          select_exprs.at(col_idx)->obj_meta_,
                                          select_exprs.at(col_idx)->obj_datum_map_))) {
         } else if (!ob_is_text_tc(select_exprs.at(col_idx)->obj_meta_.get_type()) || obj.is_null()) {
-          OZ(print_field(obj, *csv_data_writer));
+          OZ(MY_SPEC.is_copy_ ? write_copy_field(obj, *csv_data_writer)
+                              : print_field(obj, *csv_data_writer));
         } else { // text tc
           OZ(print_lob_field(obj, *select_exprs.at(col_idx), *datum, *csv_data_writer));
         }
@@ -1244,6 +1319,11 @@ int ObSelectIntoOp::create_the_only_data_writer(ObExternalFileWriter *&data_writ
   } else if (ObExternalFileFormat::FormatType::CSV_FORMAT == format_type_ && MY_SPEC.buffer_size_ > 0) {
     csv_data_writer = static_cast<ObCsvFileWriter*>(data_writer);
     if (OB_FAIL(csv_data_writer->alloc_buf(ctx_.get_allocator(), MY_SPEC.buffer_size_))) {
+    }
+  }
+  if (OB_SUCC(ret) && MY_SPEC.is_copy_ && MY_SPEC.copy_header_) {
+    csv_data_writer = static_cast<ObCsvFileWriter*>(data_writer);
+    if (OB_FAIL(write_copy_header(*csv_data_writer))) {
     }
   }
   return ret;

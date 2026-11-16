@@ -3117,6 +3117,66 @@ int ObSelectResolver::resolve_into_clause(const ParseNode *node)
       if (T_INTO_OUTFILE == node->type_) { // into outfile
         if (is_in_set_query()) {
           ret = OB_INAPPROPRIATE_INTO;
+        } else if (node->num_child_ == 6) {
+          bool enabled = false;
+          bool seen_format = false;
+          bool seen_header = false;
+          bool seen_nullstr = false;
+          const ParseNode *options = node->children_[5];
+          if (OB_FAIL(session_info_->get_sys_variable(
+                  share::SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+          } else if (!enabled) {
+            ret = OB_NOT_SUPPORTED;
+          } else if (OB_ISNULL(options) || options->type_ != T_EXPR_LIST ||
+                     options->num_child_ == 0) {
+            ret = OB_INVALID_ARGUMENT;
+          } else if (OB_FAIL(resolve_into_const_node(
+                         node->children_[0], into_item->outfile_name_))) {
+          } else {
+            for (int64_t i = 0; OB_SUCC(ret) && i < options->num_child_; ++i) {
+              const ParseNode *option = options->children_[i];
+              const ParseNode *name = NULL;
+              if (OB_ISNULL(option) || option->type_ != T_FILE_SQL_COPY_OPTION ||
+                  option->num_child_ < 1 || OB_ISNULL(name = option->children_[0]) ||
+                  OB_ISNULL(name->str_value_)) {
+                ret = OB_INVALID_ARGUMENT;
+              } else {
+                const ObString key(name->str_len_, name->str_value_);
+                if (option->value_ == 1 && !seen_format &&
+                    key.case_compare("csv") == 0) {
+                  seen_format = true;
+                } else if (option->value_ == 2 && !seen_header &&
+                           key.case_compare("header") == 0) {
+                  seen_header = true;
+                  into_item->copy_header_ = true;
+                } else if (option->value_ == 3 && !seen_nullstr &&
+                           key.case_compare("nullstr") == 0) {
+                  seen_nullstr = true;
+                  if (OB_FAIL(resolve_into_const_node(option->children_[1],
+                                                       into_item->copy_nullstr_))) {
+                  } else if (!into_item->copy_nullstr_.is_varying_len_char_type() &&
+                             !into_item->copy_nullstr_.is_unknown()) {
+                    ret = OB_INVALID_ARGUMENT;
+                  }
+                } else {
+                  ret = OB_INVALID_ARGUMENT;
+                }
+              }
+            }
+            if (OB_SUCC(ret) && !seen_format) {
+              ret = OB_NOT_SUPPORTED;
+            } else if (OB_SUCC(ret) && !seen_nullstr) {
+              into_item->copy_nullstr_.set_varchar(ObString(""));
+            }
+          }
+          if (OB_SUCC(ret)) {
+            static const char quote = '"';
+            into_item->is_copy_ = true;
+            into_item->field_str_.set_varchar(ObString(","));
+            into_item->closed_cht_.set_char_value(&quote, 1);
+            into_item->escaped_cht_.set_char_value(&quote, 1);
+            into_item->is_optional_ = true;
+          }
         } else if (node->num_child_ == 3 && NULL != node->children_[1]
             && T_EXTERNAL_FILE_FORMAT == node->children_[1]->type_) { // Handle with `FORMAT`
           if (OB_FAIL(resolve_into_outfile_with_format(node, *into_item))) {

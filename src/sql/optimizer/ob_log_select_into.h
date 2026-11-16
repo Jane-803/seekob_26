@@ -44,6 +44,10 @@ public:
         escaped_cht_(),
         cs_type_(CS_TYPE_INVALID),
         is_overwrite_(false),
+        is_copy_(false),
+        copy_header_(false),
+        copy_nullstr_(),
+        copy_column_names_(),
         external_properties_()
   {
   }
@@ -104,6 +108,17 @@ public:
   {
     is_overwrite_ = is_overwrite;
   }
+  void set_copy_options(bool is_copy, bool header, const common::ObObj &nullstr)
+  {
+    is_copy_ = is_copy;
+    copy_header_ = header;
+    copy_nullstr_ = nullstr;
+  }
+  bool is_copy() const { return is_copy_; }
+  bool copy_header() const { return copy_header_; }
+  const common::ObObj &copy_nullstr() const { return copy_nullstr_; }
+  common::ObIArray<common::ObString> &get_copy_column_names() { return copy_column_names_; }
+  const common::ObIArray<common::ObString> &get_copy_column_names() const { return copy_column_names_; }
   inline void set_external_properties(const common::ObString &external_properties)
   {
     external_properties_.assign_ptr(external_properties.ptr(), external_properties.length());
@@ -187,6 +202,10 @@ private:
   common::ObObj escaped_cht_;
   common::ObCollationType cs_type_;
   bool is_overwrite_;
+  bool is_copy_;
+  bool copy_header_;
+  common::ObObj copy_nullstr_;
+  common::ObSEArray<common::ObString, 8, common::ModulePageAllocator, true> copy_column_names_;
   common::ObString external_properties_;
 };
 }

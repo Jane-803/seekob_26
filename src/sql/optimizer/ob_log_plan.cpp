@@ -6835,9 +6835,19 @@ int ObLogPlan::allocate_select_into_as_top(ObLogicalOperator *&old_top)
       select_into->set_escaped_cht(into_item->escaped_cht_);
       select_into->set_cs_type(into_item->cs_type_);
       select_into->set_external_properties(into_item->external_properties_);
+      select_into->set_copy_options(into_item->is_copy_, into_item->copy_header_,
+                                    into_item->copy_nullstr_);
+      if (into_item->is_copy_) {
+        for (int64_t i = 0; OB_SUCC(ret) && i < stmt->get_select_items().count(); ++i) {
+          const SelectItem &item = stmt->get_select_item(i);
+          const ObString &name = item.is_real_alias_ ? item.alias_name_ : item.expr_name_;
+          if (OB_FAIL(select_into->get_copy_column_names().push_back(name))) {
+          }
+        }
+      }
       select_into->set_child(ObLogicalOperator::first_child, old_top);
       // compute property
-      if (OB_FAIL(select_into->compute_property())) {
+      if (OB_SUCC(ret) && OB_FAIL(select_into->compute_property())) {
       } else {
         old_top = select_into;
       }
