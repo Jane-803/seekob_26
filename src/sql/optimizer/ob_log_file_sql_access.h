@@ -47,6 +47,8 @@ public:
   char delimiter() const { return delimiter_; }
   char quote() const { return quote_; }
   char escape() const { return escape_; }
+  void set_nullstr(const common::ObString &value) { nullstr_ = value; }
+  const common::ObString &nullstr() const { return nullstr_; }
 
   common::ObIArray<ObColumnRefRawExpr *> &get_column_exprs()
   {
@@ -126,6 +128,7 @@ private:
   char delimiter_ = ',';
   char quote_ = '"';
   char escape_ = '"';
+  common::ObString nullstr_;
   common::ObSEArray<ObColumnRefRawExpr *, 4,
                     common::ModulePageAllocator, true> column_exprs_;
 

@@ -23,6 +23,8 @@ public:
     escape_ = escape;
   }
 
+  void set_nullstr(const std::string &nullstr) { nullstr_ = nullstr; }
+
   ~ObFileSqlCsvReader()
   {
     close();
@@ -76,7 +78,7 @@ public:
 
     const auto finish_field = [&]() {
       if (nulls != nullptr) {
-        nulls->push_back(field.empty() && !quoted);
+        nulls->push_back(field == nullstr_ && !quoted);
       }
       row.push_back(field);
       field.clear();
@@ -160,6 +162,7 @@ private:
   char delimiter_;
   char quote_;
   char escape_;
+  std::string nullstr_;
 
   ObFileSqlCsvReader(const ObFileSqlCsvReader &) = delete;
   ObFileSqlCsvReader &operator=(const ObFileSqlCsvReader &) = delete;

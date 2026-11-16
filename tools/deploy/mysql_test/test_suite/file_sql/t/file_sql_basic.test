@@ -77,6 +77,23 @@ eval copy (select 3 as id) to '$FILE_SQL_DATA_DIR/export_null.csv'
 eval select count(*) as rows_after_collision
        from read_csv('$FILE_SQL_DATA_DIR/export_null.csv');
 
+--echo # Explicit NULL text is reversible with the matching read option
+eval copy (select 1 as id, cast(null as char) as note
+           union all select 2, 'NULL')
+       to '$FILE_SQL_DATA_DIR/export_nullstr.csv'
+       (format csv, header, nullstr 'NULL');
+eval select id, note is null as is_null, coalesce(note, '<NULL>') as note
+       from read_csv('$FILE_SQL_DATA_DIR/export_nullstr.csv', nullstr = 'NULL')
+      order by id;
+
+--echo # A failing COPY leaves neither a destination nor a temporary file
+--error 3141
+eval copy (select 1 as id union all
+           select cast(json_extract('{', '$.x') as signed))
+       to '$FILE_SQL_DATA_DIR/export_error.csv' (format csv, header);
+eval select count(*) = 0 as no_failed_copy_artifacts
+       from glob('$FILE_SQL_DATA_DIR/export_error.csv*');
+
 --echo # COPY CSV option validation
 --error 1210
 eval copy (select 1 as id) to '$FILE_SQL_DATA_DIR/invalid_copy.csv'

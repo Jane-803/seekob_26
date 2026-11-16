@@ -26,6 +26,7 @@ public:
       delimiter_(','),
       quote_('"'),
       escape_('"'),
+      nullstr_(),
       column_exprs_(alloc),
       column_names_(alloc)
   {
@@ -37,6 +38,7 @@ public:
   char delimiter_;
   char quote_;
   char escape_;
+  common::ObString nullstr_;
   common::ObFixedArray<ObExpr *, common::ObIAllocator> column_exprs_;
   common::ObFixedArray<common::ObString, common::ObIAllocator> column_names_;
 

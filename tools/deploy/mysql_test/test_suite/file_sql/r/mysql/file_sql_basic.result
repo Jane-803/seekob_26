@@ -48,6 +48,13 @@ id	is_null
 2	0
 rows_after_collision
 2
+# Explicit NULL text is reversible with the matching read option
+id	is_null	note
+1	1	<NULL>
+2	0	NULL
+# A failing COPY leaves neither a destination nor a temporary file
+no_failed_copy_artifacts
+1
 # COPY CSV option validation
 # COPY table source
 id	value

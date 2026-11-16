@@ -1710,6 +1710,7 @@ int ObStaticEngineCG::generate_spec(
     spec.delimiter_ = op.delimiter();
     spec.quote_ = op.quote();
     spec.escape_ = op.escape();
+    spec.nullstr_ = op.nullstr();
     for (int64_t i = 0;
          OB_SUCC(ret) && i < op.get_column_exprs().count();
          ++i) {

@@ -139,6 +139,7 @@ struct TableItem
     file_sql_delimiter_ = ',';
     file_sql_quote_ = '"';
     file_sql_escape_ = '"';
+    file_sql_nullstr_.reset();
     is_index_table_ = false;
     ref_id_ = common::OB_INVALID_ID;
     ref_query_ = NULL;
@@ -281,6 +282,7 @@ struct TableItem
   char                file_sql_delimiter_;
   char                file_sql_quote_;
   char                file_sql_escape_;
+  common::ObString    file_sql_nullstr_;
   common::ObString    alias_name_;
   common::ObString    qb_name_; // used for hint
   TableType   type_;

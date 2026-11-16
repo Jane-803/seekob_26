@@ -3529,6 +3529,7 @@ int ObDMLResolver::resolve_file_sql_item(
   char csv_delimiter = ',';
   char csv_quote = '"';
   char csv_escape = '"';
+  ObString csv_nullstr;
   table_item = NULL;
 
   if (T_FILE_SQL_EXPRESSION != table_node.type_ || 3 != table_node.num_child_ ||
@@ -3547,7 +3548,7 @@ int ObDMLResolver::resolve_file_sql_item(
   } else if (OB_ISNULL(args_node = table_node.children_[0])
              || T_EXPR_LIST != args_node->type_
              || args_node->num_child_ < 1
-             || args_node->num_child_ > 6
+             || args_node->num_child_ > 7
              || OB_ISNULL(args_node->children_[0])) {
     ret = OB_INVALID_ARGUMENT;
     LOG_WARN("read_csv requires a file path and supported options", K(ret));
@@ -3583,6 +3584,7 @@ int ObDMLResolver::resolve_file_sql_item(
     bool seen_delimiter = false;
     bool seen_quote = false;
     bool seen_escape = false;
+    bool seen_nullstr = false;
     for (int64_t i = 1; OB_SUCC(ret) && i < args_node->num_child_; ++i) {
       const ParseNode *option = args_node->children_[i];
       const ParseNode *name_node = NULL;
@@ -3598,6 +3600,31 @@ int ObDMLResolver::resolve_file_sql_item(
           name_node = name_node->children_[2];
         }
         ObString name(name_node->str_len_, name_node->str_value_);
+        if (table_node.value_ == FILE_SQL_CSV && name.case_compare("nullstr") == 0) {
+          ObString option_text;
+          if (seen_nullstr) {
+            ret = OB_INVALID_ARGUMENT;
+          } else if (value_node->type_ == T_QUESTIONMARK &&
+                     OB_NOT_NULL(params_.param_list_) &&
+                     value_node->value_ >= 0 &&
+                     value_node->value_ < params_.param_list_->count() &&
+                     params_.param_list_->at(value_node->value_).is_string_type()) {
+            option_text = params_.param_list_->at(value_node->value_).get_string();
+          } else if ((value_node->type_ == T_VARCHAR || value_node->type_ == T_CHAR) &&
+                     OB_NOT_NULL(value_node->str_value_)) {
+            option_text.assign_ptr(value_node->str_value_, value_node->str_len_);
+          } else {
+            ret = OB_INVALID_ARGUMENT;
+          }
+          if (OB_SUCC(ret) && (option_text.length() > 1024 ||
+                               OB_FAIL(ob_write_string(*allocator_, option_text, csv_nullstr)))) {
+            if (OB_SUCC(ret)) {
+              ret = OB_INVALID_ARGUMENT;
+            }
+          }
+          seen_nullstr = true;
+          continue;
+        }
         if (table_node.value_ == FILE_SQL_CSV &&
             (name.case_compare("delimiter") == 0 ||
              name.case_compare("quote") == 0 ||
@@ -3761,7 +3788,9 @@ int ObDMLResolver::resolve_file_sql_item(
       const int schema_ret = table_node.value_ == FILE_SQL_CSV
           ? infer_file_sql_csv_schema(full_path_buf, csv_columns, csv_types,
                                       csv_has_header, nullptr,
-                                      csv_delimiter, csv_quote, csv_escape)
+                                      csv_delimiter, csv_quote, csv_escape,
+                                      std::string(csv_nullstr.empty() ? "" : csv_nullstr.ptr(),
+                                                  csv_nullstr.length()))
           : table_node.value_ == FILE_SQL_JSONL
               ? infer_file_sql_json_schema(full_path_buf, csv_columns, csv_types)
               : table_node.value_ == FILE_SQL_PARQUET
@@ -3813,6 +3842,7 @@ int ObDMLResolver::resolve_file_sql_item(
             new_item->file_sql_delimiter_ = csv_delimiter;
             new_item->file_sql_quote_ = csv_quote;
             new_item->file_sql_escape_ = csv_escape;
+            new_item->file_sql_nullstr_ = csv_nullstr;
             new_item->is_view_table_ = false;
 
             if (OB_FAIL(stmt->add_table_item(session_info_, new_item))) {
