@@ -97,7 +97,10 @@ int ObDelUpdResolver::resolve_assignments(const ParseNode &parse_node,
                                ref_expr->get_table_id()))) {
         ret = OB_ERR_UNEXPECTED;
       } else {
-        if (table->is_basic_table()) {
+        if (table->is_basic_table() && session_info_->is_user_session() &&
+            !session_info_->get_ddl_info().is_ddl() &&
+            (session_info_->get_cur_exec_ctx() == NULL ||
+             !session_info_->get_cur_exec_ctx()->get_das_ctx().is_ai_column_task_)) {
           const ObColumnSchemaV2 *ai_column = NULL;
           if (OB_FAIL(schema_checker_->get_column_schema(table->ref_id_,
                                ref_expr->get_column_id(), ai_column, true))) {
@@ -2182,7 +2185,9 @@ int ObDelUpdResolver::resolve_insert_columns(const ParseNode *node,
       } else if (OB_FAIL(mock_values_column_ref(column_expr))) {
       }
       if (OB_SUCC(ret) && table_item->is_basic_table() &&
-          !session_info_->get_ddl_info().is_ddl()) {
+          session_info_->is_user_session() && !session_info_->get_ddl_info().is_ddl() &&
+          (session_info_->get_cur_exec_ctx() == NULL ||
+           !session_info_->get_cur_exec_ctx()->get_das_ctx().is_ai_column_task_)) {
         const ObColumnSchemaV2 *ai_column = NULL;
         if (OB_FAIL(schema_checker_->get_column_schema(table_item->ref_id_,
                             column_expr->get_column_id(), ai_column, true))) {

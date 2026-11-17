@@ -18,11 +18,43 @@
 #include "config_bridge.h"
 #include "sql/engine/dml/ob_table_delete_op.h"
 #include "sql/engine/dml/ob_dml_service.h"
+#include "sql/resolver/ob_resolver_utils.h"
+#include "share/inner_table/ob_inner_table_schema.h"
 
 namespace oceanbase
 {
 namespace sql
 {
+
+static int ai_delete_rowkey_predicate(const ObDelCtDef &ctdef,
+    const share::schema::ObTableSchema &table, ObEvalCtx &eval_ctx,
+    common::ObSqlString &predicate)
+{
+  int ret = OB_SUCCESS;
+  for (int64_t i = 0; OB_SUCC(ret) && i < ctdef.das_ctdef_.rowkey_cnt_; ++i) {
+    const share::schema::ObColumnSchemaV2 *column =
+        table.get_column_schema(ctdef.column_ids_.at(i));
+    ObExpr *expr = ctdef.old_row_.at(i);
+    ObDatum *datum = nullptr;
+    common::ObObj value;
+    char literal[4096];
+    int64_t pos = 0;
+    if (OB_ISNULL(column) || OB_ISNULL(expr)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(expr->eval(eval_ctx, datum))) {
+    } else if (OB_ISNULL(datum) || datum->is_null()) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (OB_FAIL(datum->to_obj(value, expr->obj_meta_, expr->obj_datum_map_))) {
+    } else if (OB_FAIL(value.print_sql_literal(literal, sizeof(literal), pos))) {
+    } else if (i > 0 && OB_FAIL(predicate.append(" AND "))) {
+    } else if (OB_FAIL(ObResolverUtils::append_escaped_identifier(
+                           predicate, column->get_column_name_str()))) {
+    } else if (OB_FAIL(predicate.append(" = "))) {
+    } else if (OB_FAIL(predicate.append(literal, pos))) {
+    }
+  }
+  return ret;
+}
 
 OB_SERIALIZE_MEMBER((ObTableDeleteOpInput, ObTableModifyOpInput));
 
@@ -251,6 +283,49 @@ OB_INLINE int ObTableDeleteOp::delete_row_to_das()
       } else if (need_after_row_process(del_ctdef) && OB_FAIL(dml_modify_rows_.push_back(modify_row))) {
       } else {
         ++del_rtdef.cur_row_num_;
+      }
+      if (OB_SUCC(ret) && !is_skipped && j == 0 && del_ctdef.is_primary_index_ &&
+          GET_MY_SESSION(ctx_)->is_user_session() &&
+          !is_sys_table(del_ctdef.das_ctdef_.index_tid_)) {
+        share::schema::ObSchemaGetterGuard *guard = ctx_.get_sql_ctx()->schema_guard_;
+        const share::schema::ObTableSchema *table = nullptr;
+        if (OB_ISNULL(guard)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(guard->get_table_schema(
+                           del_ctdef.das_ctdef_.index_tid_, table))) {
+        } else if (OB_ISNULL(table)) {
+          ret = OB_SCHEMA_ERROR;
+        } else {
+          bool has_ai = false;
+          for (int64_t k = 0; k < table->get_column_count() && !has_ai; ++k) {
+            const share::schema::ObColumnSchemaV2 *col = table->get_column_schema_by_idx(k);
+            has_ai = col != nullptr && col->is_ai_column();
+          }
+          if (has_ai) {
+            common::ObSqlString predicate;
+            common::ObSqlString literal;
+            common::ObSqlString sql;
+            if (OB_FAIL(ai_delete_rowkey_predicate(del_ctdef, *table, eval_ctx_, predicate))) {
+            } else if (OB_FAIL(sql_append_hex_escape_str(predicate.string(), literal))) {
+            } else if (OB_FAIL(sql.append_fmt(
+                   "DELETE FROM oceanbase.%s WHERE table_id=%lu AND rowkey_predicate=%s",
+                   share::OB_ALL_AI_COLUMN_TASK_TNAME,
+                   share::schema::ObSchemaUtils::get_extract_schema_id(table->get_table_id()),
+                   literal.ptr()))) {
+            } else if (OB_FAIL(submit_all_dml_task())) {
+            } else if (OB_FAIL(open_inner_conn())) {
+            } else {
+              ctx_.get_das_ctx().is_ai_column_task_ = true;
+              if (OB_FAIL(begin_nested_session(false))) {
+              } else {
+                ret = execute_write(sql.ptr());
+                int end_ret = end_nested_session();
+                if (OB_SUCC(ret)) { ret = end_ret; }
+              }
+              ctx_.get_das_ctx().is_ai_column_task_ = false;
+            }
+          }
+        }
       }
     }
     if (OB_SUCC(ret)) {
