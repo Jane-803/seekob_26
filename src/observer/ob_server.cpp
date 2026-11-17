@@ -125,16 +125,25 @@ public:
   {
     if (proxy_ != nullptr && GCTX.schema_service_ != nullptr &&
         GCTX.schema_service_->is_runtime_schema_refreshed()) {
-      int ret = process_one();
-      if (ret != OB_SUCCESS && REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
-        LOG_WARN("AI column worker iteration failed", KR(ret));
+      for (int64_t i = 0; i < 32; ++i) {
+        bool processed = false;
+        int ret = process_one(processed);
+        if (ret != OB_SUCCESS) {
+          if (REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
+            LOG_WARN("AI column worker iteration failed", KR(ret));
+          }
+          break;
+        } else if (!processed) {
+          break;
+        }
       }
     }
   }
 private:
-  int process_one()
+  int process_one(bool &processed)
   {
     int ret = OB_SUCCESS;
+    processed = false;
     common::ObMySQLTransaction trans;
     common::ObSqlString group_sql;
     common::ObSqlString update_sql;
@@ -143,6 +152,7 @@ private:
     common::ObSqlString request_literal;
     common::ObSqlString rowkey_literal;
     common::ObSqlString rowkey_sql;
+    common::ObSqlString table_sql;
     common::ObSqlString terminal_sql;
     common::ObArenaAllocator sql_allocator("AiColWorker");
     common::ObArray<common::ObString> column_updates;
@@ -157,10 +167,13 @@ private:
       SMART_VAR(common::ObMySQLProxy::MySQLResult, first_res) {
         common::sqlclient::ObMySQLResult *result = nullptr;
         if (OB_FAIL(trans.read(first_res,
-            "SELECT request_id, table_id, rowkey_predicate, retry_count, max_retries "
-            "FROM oceanbase.__all_ai_column_task "
-            "WHERE state IN (0, 3) AND eligible_ts <= NOW(6) "
-            "ORDER BY task_id LIMIT 1 FOR UPDATE"))) {
+            "SELECT task.request_id, task.table_id, task.rowkey_predicate, "
+            "task.retry_count, task.max_retries, db.database_name, tb.table_name "
+            "FROM oceanbase.__all_ai_column_task task "
+            "JOIN oceanbase.__all_table tb ON tb.table_id=task.table_id "
+            "JOIN oceanbase.__all_database db ON db.database_id=tb.database_id "
+            "WHERE task.state IN (0, 3) AND task.eligible_ts <= NOW(6) "
+            "ORDER BY task.task_id LIMIT 1"))) {
         } else if (OB_ISNULL(result = first_res.get_result())) {
           ret = OB_ERR_UNEXPECTED;
         } else if (OB_ITER_END == (ret = result->next())) {
@@ -168,15 +181,49 @@ private:
         } else if (OB_SUCC(ret)) {
           common::ObString request_id;
           common::ObString rowkey;
+          common::ObString db_name;
+          common::ObString table_name;
           has_task = true;
+          processed = true;
           if (OB_FAIL(result->get_varchar("request_id", request_id))) {
           } else if (OB_FAIL(result->get_int("table_id", table_id))) {
           } else if (OB_FAIL(result->get_varchar("rowkey_predicate", rowkey))) {
           } else if (OB_FAIL(result->get_int("retry_count", retry_count))) {
           } else if (OB_FAIL(result->get_int("max_retries", max_retries))) {
+          } else if (OB_FAIL(result->get_varchar("database_name", db_name))) {
+          } else if (OB_FAIL(result->get_varchar("table_name", table_name))) {
           } else if (OB_FAIL(sql_append_hex_escape_str(request_id, request_literal))) {
           } else if (OB_FAIL(sql_append_hex_escape_str(rowkey, rowkey_literal))) {
           } else if (OB_FAIL(rowkey_sql.append_fmt("%.*s", rowkey.length(), rowkey.ptr()))) {
+          } else if (OB_FAIL(sql::ObResolverUtils::append_escaped_identifier(table_sql, db_name))) {
+          } else if (OB_FAIL(table_sql.append("."))) {
+          } else if (OB_FAIL(sql::ObResolverUtils::append_escaped_identifier(table_sql, table_name))) {
+          }
+        }
+      }
+    }
+    if (OB_SUCC(ret) && has_task) {
+      common::ObSqlString lock_sql;
+      if (OB_FAIL(lock_sql.append_fmt("SELECT 1 FROM %s WHERE %s FOR UPDATE",
+                                      table_sql.ptr(), rowkey_sql.ptr()))) {
+      } else {
+        SMART_VAR(common::ObMySQLProxy::MySQLResult, row_res) {
+          common::sqlclient::ObMySQLResult *result = nullptr;
+          if (OB_FAIL(trans.read(row_res, lock_sql.ptr()))) {
+          } else if (OB_ISNULL(result = row_res.get_result())) {
+            ret = OB_ERR_UNEXPECTED;
+          } else if (result->next() == OB_ITER_END) {
+            // A deleted row may leave an older task behind after an interrupted DML.
+            common::ObSqlString cleanup_sql;
+            int64_t affected_rows = 0;
+            if (OB_FAIL(cleanup_sql.append_fmt(
+                    "DELETE FROM oceanbase.__all_ai_column_task WHERE table_id=%ld "
+                    "AND request_id=%s AND rowkey_predicate=%s",
+                    table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
+            } else if (OB_FAIL(trans.write(cleanup_sql.ptr(), affected_rows))) {
+            } else {
+              has_task = false;
+            }
           }
         }
       }
