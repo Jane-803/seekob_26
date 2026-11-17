@@ -25,6 +25,10 @@ create table ai_column_p0_t1.docs(
   ) WITH (sync_mode='async', max_retries=2)
 );
 
+--error 1235
+insert into ai_column_p0_t1.docs(id, title, content, tags)
+values(99, 'blocked', 'blocked', null);
+
 start transaction;
 insert into ai_column_p0_t1.docs(id, title, content)
 values(1, 'title-1', 'initial');
@@ -55,6 +59,20 @@ while ($retry)
 select tags is not null as initial_worker_completed,
        json_unquote(json_extract(tags, '$.input')) = 'Classify: initial' as initial_value
 from ai_column_p0_t1.docs where id = 1;
+
+insert into ai_column_p0_t1.docs values(98, 'positional-safe', 'positional-safe');
+let $retry = 100;
+let $positional_done = 0;
+while ($retry)
+{
+  let $positional_done = `select title = 'positional-safe' and tags is not null
+                         from ai_column_p0_t1.docs where id = 98`;
+  if ($positional_done == 1) { let $retry = 0; }
+  if ($positional_done == 0) { --real_sleep 0.1
+    dec $retry; }
+}
+eval select $positional_done = 1 as positional_insert_omits_ai_result;
+delete from ai_column_p0_t1.docs where id = 98;
 
 --exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19121
 update ai_column_p0_t1.docs set title = 'title-2' where id = 1;

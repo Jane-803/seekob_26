@@ -49,6 +49,18 @@ join oceanbase.__all_database d on d.database_id = t.database_id
 where d.database_name = 'ai_column_p0_ddl' and t.table_name = 'docs'
 order by a.column_name;
 
+--disable_result_log
+show ai columns from ai_column_p0_ddl.docs;
+show ai columns from ai_column_p0_ddl.docs like 'tags';
+--enable_result_log
+
+select a.vector_dimension = 4 as embedding_dimension_persisted
+from oceanbase.__all_ai_column a
+join oceanbase.__all_table t on t.table_id = a.table_id
+join oceanbase.__all_database d on d.database_id = t.database_id
+where d.database_name = 'ai_column_p0_ddl' and t.table_name = 'docs'
+  and a.column_name = 'emb';
+
 select count(*) = 6 as three_hidden_columns_per_ai_column
 from oceanbase.__all_ai_column a
 join oceanbase.__all_table t on t.table_id = a.table_id

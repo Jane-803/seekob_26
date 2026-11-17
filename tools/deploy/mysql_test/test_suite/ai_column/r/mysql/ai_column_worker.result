@@ -55,6 +55,15 @@ where d.database_name = 'ai_column_p0_worker' and t.table_name = 'docs';
 grouped_tasks_removed
 1
 mock_typed_prompts=ok
+create table ai_column_p0_worker.add_existing(id bigint primary key, content varchar(200));
+insert into ai_column_p0_worker.add_existing values(1, 'added-existing');
+alter table ai_column_p0_worker.add_existing add column result varchar(400) AI COLUMN (
+AI_COMPLETE('p0_worker_complete', content)
+) WITH (sync_mode='async', max_retries=0);
+select 1 = 1 as alter_add_existing_row_backfilled;
+alter_add_existing_row_backfilled
+1
+drop table ai_column_p0_worker.add_existing;
 drop table if exists ai_column_p0_worker.retry_docs;
 Warnings:
 Note	1051	Unknown table 'ai_column_p0_worker.retry_docs'
@@ -98,6 +107,20 @@ terminal_failure_keeps_null
 select 0 = 0 as terminal_failure_removes_task;
 terminal_failure_removes_task
 1
+create table ai_column_p0_worker.type_fail_docs(
+id bigint primary key,
+content varchar(200),
+tags json AI COLUMN (AI_COMPLETE('p0_worker_complete', content))
+WITH (sync_mode='async', max_retries=0),
+note varchar(400) AI COLUMN (AI_COMPLETE('p0_worker_complete', content))
+WITH (sync_mode='async', max_retries=0)
+);
+insert into ai_column_p0_worker.type_fail_docs(id, content) values(5, 'invalid-json');
+select tags is null and note = '{invalid-json' as invalid_type_fails_only_its_column
+from ai_column_p0_worker.type_fail_docs where id = 5;
+invalid_type_fails_only_its_column
+1
+drop table ai_column_p0_worker.type_fail_docs;
 insert into ai_column_p0_worker.docs(id, content) values(4, 'slow-old');
 update ai_column_p0_worker.docs set content = 'fast-new' where id = 4;
 select 1 = 1 as latest_request_wins;

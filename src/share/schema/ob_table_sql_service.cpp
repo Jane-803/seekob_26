@@ -38,6 +38,16 @@ static int insert_ai_column_metadata(ObISQLClient &sql_client,
         ObDMLSqlSplicer row;
         ObSqlString sql;
         int64_t affected_rows = 0;
+        int64_t vector_dim = 0;
+        const ObIArray<ObString> &extended_info = column.get_extended_type_info();
+        if (column.get_data_type() == ObCollectionSQLType && extended_info.count() == 1) {
+          ObString info = extended_info.at(0);
+          ObString kind = info.split_on('(').trim();
+          if (kind.compare("VECTOR") == 0) {
+            info = info.split_on(')').trim();
+            vector_dim = atoi(info.ptr());
+          }
+        }
         if (OB_FAIL(row.add_pk_column("table_id", ObSchemaUtils::get_extract_schema_id(
                 table.get_table_id()))) ||
             OB_FAIL(row.add_pk_column("column_id", column.get_column_id())) ||
@@ -50,9 +60,10 @@ static int insert_ai_column_metadata(ObISQLClient &sql_client,
             OB_FAIL(row.add_column("max_retries", column.get_ai_max_retries())) ||
             OB_FAIL(row.add_column("definition_version", column.get_schema_version() > 0
                 ? column.get_schema_version() : table.get_schema_version())) ||
-            OB_FAIL(row.add_column("result_type", column.get_data_type())) ||
-            OB_FAIL(row.splice_insert_sql(OB_ALL_AI_COLUMN_TNAME, sql)) ||
-            OB_FAIL(sql_client.write(sql.ptr(), affected_rows))) {
+            OB_FAIL(row.add_column("result_type", column.get_data_type()))) {
+        } else if (vector_dim > 0 && OB_FAIL(row.add_column("vector_dimension", vector_dim))) {
+        } else if (OB_FAIL(row.splice_insert_sql(OB_ALL_AI_COLUMN_TNAME, sql))) {
+        } else if (OB_FAIL(sql_client.write(sql.ptr(), affected_rows))) {
         } else if (affected_rows != 1) {
           ret = OB_ERR_UNEXPECTED;
         }

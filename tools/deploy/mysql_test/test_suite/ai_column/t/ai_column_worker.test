@@ -79,6 +79,30 @@ join oceanbase.__all_database d on d.database_id = t.database_id
 where d.database_name = 'ai_column_p0_worker' and t.table_name = 'docs';
 --exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py assert 19122 typed-prompts
 
+create table ai_column_p0_worker.add_existing(id bigint primary key, content varchar(200));
+insert into ai_column_p0_worker.add_existing values(1, 'added-existing');
+alter table ai_column_p0_worker.add_existing add column result varchar(400) AI COLUMN (
+  AI_COMPLETE('p0_worker_complete', content)
+) WITH (sync_mode='async', max_retries=0);
+let $retry = 100;
+let $backfilled = 0;
+while ($retry)
+{
+  let $backfilled = `select ifnull(result = 'mock:added-existing', 0)
+                     from ai_column_p0_worker.add_existing where id = 1`;
+  if ($backfilled == 1)
+  {
+    let $retry = 0;
+  }
+  if ($backfilled == 0)
+  {
+    --real_sleep 0.1
+    dec $retry;
+  }
+}
+eval select $backfilled = 1 as alter_add_existing_row_backfilled;
+drop table ai_column_p0_worker.add_existing;
+
 drop table if exists ai_column_p0_worker.retry_docs;
 create table ai_column_p0_worker.retry_docs(
   id bigint primary key,
@@ -166,6 +190,32 @@ while ($retry)
 select result is null as terminal_failure_keeps_null
 from ai_column_p0_worker.fail_docs where id = 3;
 eval select $tasks = 0 as terminal_failure_removes_task;
+
+create table ai_column_p0_worker.type_fail_docs(
+  id bigint primary key,
+  content varchar(200),
+  tags json AI COLUMN (AI_COMPLETE('p0_worker_complete', content))
+    WITH (sync_mode='async', max_retries=0),
+  note varchar(400) AI COLUMN (AI_COMPLETE('p0_worker_complete', content))
+    WITH (sync_mode='async', max_retries=0)
+);
+insert into ai_column_p0_worker.type_fail_docs(id, content) values(5, 'invalid-json');
+let $retry = 100;
+let $tasks = 1;
+while ($retry)
+{
+  let $tasks = `select count(*) from oceanbase.__all_ai_column_task task
+      join oceanbase.__all_table t on t.table_id = task.table_id
+      join oceanbase.__all_database d on d.database_id = t.database_id
+      where d.database_name = 'ai_column_p0_worker'
+        and t.table_name = 'type_fail_docs'`;
+  if ($tasks == 0) { let $retry = 0; }
+  if ($tasks != 0) { --real_sleep 0.1
+    dec $retry; }
+}
+select tags is null and note = '{invalid-json' as invalid_type_fails_only_its_column
+from ai_column_p0_worker.type_fail_docs where id = 5;
+drop table ai_column_p0_worker.type_fail_docs;
 
 --exec python3 mysql_test/test_suite/ai_column/include/ai_column_mock.py reset 19122
 insert into ai_column_p0_worker.docs(id, content) values(4, 'slow-old');

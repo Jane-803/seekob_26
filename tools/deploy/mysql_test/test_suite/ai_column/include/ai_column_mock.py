@@ -154,7 +154,11 @@ def serve(port):
                     ]
                 }
             else:
-                if "base-10 integer" in system_text:
+                if "invalid-json" in user_text:
+                    content = "{invalid-json"
+                elif "invalid-int" in user_text:
+                    content = "not-an-integer"
+                elif "base-10 integer" in system_text:
                     content = "7"
                 elif "valid JSON value" in system_text:
                     content = json.dumps(

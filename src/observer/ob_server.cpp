@@ -56,6 +56,7 @@ int ObServer::get_lower_bound_freeze_info(const int64_t snapshot_version, share:
 #include "observer/ob_server_options.h"
 #include "share/ob_timezone_mgr.h"
 #include "share/ob_schema_status_proxy.h"
+#include "share/ob_thread_pool.h"
 #include "share/schema/ob_multi_version_schema_service.h"
 #include "logservice/ob_log_allocator_mgr.h"
 #include "observer/omt/ob_server_runtime.h"
@@ -101,6 +102,8 @@ int ObServer::get_lower_bound_freeze_info(const int64_t snapshot_version, share:
 #include "rpc/ob_request.h"
 #include "storage/blocksstable/ob_block_sstable_struct.h"
 #include "standby/standby_module.h"
+#include <cerrno>
+#include <cstdlib>
 
 using namespace oceanbase::lib;
 using namespace oceanbase::common;
@@ -112,30 +115,46 @@ namespace observer
 namespace
 {
 
-class AiColumnWorker final : public common::ObTimerTask
+int64_t ai_column_recovery_state = 0;
+
+class AiColumnWorker final : public share::ObThreadPool
 {
 public:
-  AiColumnWorker() : proxy_(nullptr) { disable_timeout_check(); }
-  int start(common::ObTimer &timer, common::ObMySQLProxy &proxy)
+  AiColumnWorker() : share::ObThreadPool(4), proxy_(nullptr) {}
+  ~AiColumnWorker() { stop(); wait(); }
+  int start(common::ObMySQLProxy &proxy)
   {
     proxy_ = &proxy;
-    return timer.schedule(*this, 100 * 1000, true);
+    return share::ObThreadPool::start();
   }
-  void runTimerTask() override
+  void run1() override
   {
-    if (proxy_ != nullptr && GCTX.schema_service_ != nullptr &&
-        GCTX.schema_service_->is_runtime_schema_refreshed()) {
-      for (int64_t i = 0; i < 32; ++i) {
-        bool processed = false;
-        int ret = process_one(processed);
-        if (ret != OB_SUCCESS) {
-          if (REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
-            LOG_WARN("AI column worker iteration failed", KR(ret));
+    while (!has_set_stop()) {
+      bool processed = false;
+      if (proxy_ != nullptr && GCTX.schema_service_ != nullptr &&
+          GCTX.schema_service_->is_runtime_schema_refreshed()) {
+        if (ATOMIC_BCAS(&ai_column_recovery_state, 0, 1)) {
+          int64_t affected_rows = 0;
+          int ret = proxy_->write(
+              "UPDATE oceanbase.__all_ai_column_task SET state=0, eligible_ts=NOW(6) "
+              "WHERE state=1", affected_rows);
+          ATOMIC_STORE(&ai_column_recovery_state, ret == OB_SUCCESS ? 2 : 0);
+          if (ret != OB_SUCCESS) {
+            LOG_WARN("failed to recover interrupted AI column tasks", KR(ret));
           }
-          break;
-        } else if (!processed) {
-          break;
         }
+        if (ATOMIC_LOAD(&ai_column_recovery_state) == 2) {
+          int ret = process_one(processed);
+          if (ret != OB_SUCCESS) {
+            processed = false;
+            if (REACH_TIME_INTERVAL(5 * 1000 * 1000)) {
+              LOG_WARN("AI column worker iteration failed", KR(ret));
+            }
+          }
+        }
+      }
+      if (!processed) {
+        ob_usleep(100 * 1000);
       }
     }
   }
@@ -146,8 +165,6 @@ private:
     processed = false;
     common::ObMySQLTransaction trans;
     common::ObSqlString group_sql;
-    common::ObSqlString update_sql;
-    common::ObSqlString failure_sql;
     common::ObSqlString delete_sql;
     common::ObSqlString request_literal;
     common::ObSqlString rowkey_literal;
@@ -158,10 +175,13 @@ private:
     common::ObArray<common::ObString> column_updates;
     common::ObArray<common::ObString> column_names;
     common::ObArray<int64_t> column_ids;
+    common::ObArray<int64_t> column_result_types;
+    common::ObArray<int64_t> column_lengths;
     int64_t table_id = 0;
     int64_t retry_count = 0;
     int64_t max_retries = 0;
     bool has_task = false;
+    bool claimed = false;
     if (OB_FAIL(trans.start(proxy_))) {
     } else {
       SMART_VAR(common::ObMySQLProxy::MySQLResult, first_res) {
@@ -172,7 +192,7 @@ private:
             "FROM oceanbase.__all_ai_column_task task "
             "JOIN oceanbase.__all_table tb ON tb.table_id=task.table_id "
             "JOIN oceanbase.__all_database db ON db.database_id=tb.database_id "
-            "WHERE task.state IN (0, 3) AND task.eligible_ts <= NOW(6) "
+            "WHERE task.state IN (0, 1, 3) AND task.eligible_ts <= NOW(6) "
             "ORDER BY task.task_id LIMIT 1"))) {
         } else if (OB_ISNULL(result = first_res.get_result())) {
           ret = OB_ERR_UNEXPECTED;
@@ -212,7 +232,11 @@ private:
           if (OB_FAIL(trans.read(row_res, lock_sql.ptr()))) {
           } else if (OB_ISNULL(result = row_res.get_result())) {
             ret = OB_ERR_UNEXPECTED;
-          } else if (result->next() == OB_ITER_END) {
+          } else {
+            int next_ret = result->next();
+            if (next_ret != OB_SUCCESS && next_ret != OB_ITER_END) {
+              ret = next_ret;
+            } else if (next_ret == OB_ITER_END) {
             // A deleted row may leave an older task behind after an interrupted DML.
             common::ObSqlString cleanup_sql;
             int64_t affected_rows = 0;
@@ -224,18 +248,22 @@ private:
             } else {
               has_task = false;
             }
+            }
           }
         }
       }
     }
     if (OB_SUCC(ret) && has_task) {
       if (OB_FAIL(group_sql.append_fmt(
-          "SELECT task.column_id, ai.column_name, ai.normalized_expr, "
-          "ai.state_column_id, ai.request_column_id, db.database_name, tb.table_name "
+          "SELECT task.column_id, ai.column_name, ai.normalized_expr, ai.result_type, "
+          "col.data_length, "
+          "db.database_name, tb.table_name "
           "FROM oceanbase.__all_ai_column_task task "
           "JOIN oceanbase.__all_ai_column ai ON ai.table_id=task.table_id "
           "AND ai.column_id=task.column_id "
           "AND ai.definition_version=task.definition_version "
+          "JOIN oceanbase.__all_column col ON col.table_id=task.table_id "
+          "AND col.column_id=task.column_id "
           "JOIN oceanbase.__all_table tb ON tb.table_id=task.table_id "
           "JOIN oceanbase.__all_database db ON db.database_id=tb.database_id "
           "WHERE task.table_id=%ld AND task.request_id=%s "
@@ -254,24 +282,18 @@ private:
               common::ObString expr;
               common::ObString db_name;
               common::ObString table_name;
-              int64_t state_id = 0;
-              int64_t request_id = 0;
               int64_t column_id = 0;
+              int64_t result_type = 0;
+              int64_t data_length = 0;
               if (OB_FAIL(result->get_varchar("column_name", column_name))) {
               } else if (OB_FAIL(result->get_varchar("normalized_expr", expr))) {
               } else if (OB_FAIL(result->get_varchar("database_name", db_name))) {
               } else if (OB_FAIL(result->get_varchar("table_name", table_name))) {
-              } else if (OB_FAIL(result->get_int("state_column_id", state_id))) {
-              } else if (OB_FAIL(result->get_int("request_column_id", request_id))) {
               } else if (OB_FAIL(result->get_int("column_id", column_id))) {
+              } else if (OB_FAIL(result->get_int("result_type", result_type))) {
+              } else if (OB_FAIL(result->get_int("data_length", data_length))) {
               } else if (count == 0) {
-                if (OB_FAIL(update_sql.append("UPDATE "))) {
-                } else if (OB_FAIL(sql::ObResolverUtils::append_escaped_identifier(update_sql, db_name))) {
-                } else if (OB_FAIL(update_sql.append("."))) {
-                } else if (OB_FAIL(sql::ObResolverUtils::append_escaped_identifier(update_sql, table_name))) {
-                } else if (OB_FAIL(update_sql.append(" SET "))) {
-                }
-                if (OB_SUCC(ret) && OB_FAIL(terminal_sql.append("UPDATE "))) {
+                if (OB_FAIL(terminal_sql.append("UPDATE "))) {
                 } else if (OB_SUCC(ret) && OB_FAIL(
                     sql::ObResolverUtils::append_escaped_identifier(terminal_sql, db_name))) {
                 } else if (OB_SUCC(ret) && OB_FAIL(terminal_sql.append("."))) {
@@ -279,30 +301,6 @@ private:
                     sql::ObResolverUtils::append_escaped_identifier(terminal_sql, table_name))) {
                 } else if (OB_SUCC(ret) && OB_FAIL(terminal_sql.append(" SET "))) {
                 }
-                if (OB_SUCC(ret) && OB_FAIL(failure_sql.append("UPDATE "))) {
-                } else if (OB_SUCC(ret) && OB_FAIL(
-                    sql::ObResolverUtils::append_escaped_identifier(failure_sql, db_name))) {
-                } else if (OB_SUCC(ret) && OB_FAIL(failure_sql.append("."))) {
-                } else if (OB_SUCC(ret) && OB_FAIL(
-                    sql::ObResolverUtils::append_escaped_identifier(failure_sql, table_name))) {
-                } else if (OB_SUCC(ret) && OB_FAIL(failure_sql.append(" SET "))) {
-                }
-              }
-              if (OB_SUCC(ret) && count > 0 && OB_FAIL(update_sql.append(", "))) {
-              }
-              if (OB_SUCC(ret) && count > 0 && OB_FAIL(failure_sql.append(", "))) {
-              }
-              if (OB_SUCC(ret) && OB_FAIL(sql::ObResolverUtils::append_escaped_identifier(
-                                      update_sql, column_name))) {
-              } else if (OB_SUCC(ret) && OB_FAIL(update_sql.append_fmt(" = %.*s, `__ai_state_%ld` = 1, "
-                                      "`__ai_request_%ld` = %s",
-                                      expr.length(), expr.ptr(), column_id,
-                                      column_id, request_literal.ptr()))) {
-              }
-              if (OB_SUCC(ret) && OB_FAIL(sql::ObResolverUtils::append_escaped_identifier(
-                                      failure_sql, column_name))) {
-              } else if (OB_SUCC(ret) && OB_FAIL(failure_sql.append_fmt(
-                                      " = NULL, `__ai_state_%ld` = 2", column_id))) {
               }
               if (OB_SUCC(ret)) {
                 common::ObSqlString one_update;
@@ -325,6 +323,8 @@ private:
                   } else if (OB_FAIL(column_updates.push_back(saved_update))) {
                   } else if (OB_FAIL(column_names.push_back(saved_name))) {
                   } else if (OB_FAIL(column_ids.push_back(column_id))) {
+                  } else if (OB_FAIL(column_result_types.push_back(result_type))) {
+                  } else if (OB_FAIL(column_lengths.push_back(data_length))) {
                   }
                 }
               }
@@ -333,20 +333,41 @@ private:
             if (ret == OB_ITER_END) {
               ret = OB_SUCCESS;
             }
-            if (OB_SUCC(ret) && count > 0 &&
-                OB_FAIL(update_sql.append_fmt(" WHERE %s", rowkey_sql.ptr()))) {
-            }
-            if (OB_SUCC(ret) && count > 0 &&
-                OB_FAIL(failure_sql.append_fmt(" WHERE %s", rowkey_sql.ptr()))) {
-            }
           }
         }
       }
       if (OB_SUCC(ret)) {
         int64_t affected_rows = 0;
+        common::ObSqlString claim_sql;
         if (column_updates.empty()) {
           // A dropped or redefined AI column makes the old task obsolete.
-        } else if (retry_count >= max_retries) {
+          if (OB_FAIL(claim_sql.append_fmt(
+              "DELETE FROM oceanbase.__all_ai_column_task WHERE table_id=%ld "
+              "AND request_id=%s AND rowkey_predicate=%s",
+              table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
+          } else if (OB_FAIL(trans.write(claim_sql.ptr(), affected_rows))) {
+          }
+        } else if (OB_FAIL(claim_sql.append_fmt(
+            "UPDATE oceanbase.__all_ai_column_task SET state=1, "
+            "eligible_ts=DATE_ADD(NOW(6), INTERVAL 300 SECOND) "
+            "WHERE table_id=%ld AND request_id=%s AND rowkey_predicate=%s "
+            "AND state IN (0, 1, 3) AND eligible_ts <= NOW(6)",
+            table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
+        } else if (OB_FAIL(trans.write(claim_sql.ptr(), affected_rows))) {
+        } else {
+          claimed = affected_rows == column_updates.count();
+        }
+      }
+    }
+    if (trans.is_started()) {
+      int end_ret = trans.end(OB_SUCC(ret));
+      if (OB_SUCC(ret)) {
+        ret = end_ret;
+      }
+    }
+    if (OB_SUCC(ret) && claimed) {
+      bool any_failure = false;
+      bool publish_value_failed = false;
           for (int64_t i = 0; OB_SUCC(ret) && i < column_updates.count(); ++i) {
             if (i > 0 && OB_FAIL(terminal_sql.append(", "))) {
             } else if (OB_FAIL(terminal_sql.append(column_names.at(i)))) {
@@ -361,17 +382,68 @@ private:
                     OB_NOT_NULL(result = value_res.get_result()) &&
                     result->next() == OB_SUCCESS &&
                     result->get_obj(int64_t(0), value) == OB_SUCCESS && !value.is_null()) {
-                  valid_value = true;
                   char *literal_buf = static_cast<char *>(sql_allocator.alloc(1024 * 1024));
                   int64_t literal_pos = 0;
                   if (OB_ISNULL(literal_buf)) {
                     ret = OB_ALLOCATE_MEMORY_FAILED;
                   } else if (OB_FAIL(value.print_sql_literal(
                                     literal_buf, 1024 * 1024, literal_pos))) {
-                  } else if (OB_FAIL(terminal_sql.append(literal_buf, literal_pos))) {
+                  } else {
+                    valid_value = true;
+                    if (column_result_types.at(i) == ObIntType && value.is_string_type()) {
+                      ObString str = value.get_string();
+                      char number[64];
+                      if (str.length() <= 0 || str.length() >= sizeof(number)) {
+                        valid_value = false;
+                      } else {
+                        MEMCPY(number, str.ptr(), str.length());
+                        number[str.length()] = '\0';
+                        char *end = nullptr;
+                        errno = 0;
+                        (void)strtoll(number, &end, 10);
+                        valid_value = errno == 0 && end == number + str.length();
+                      }
+                    } else if (column_result_types.at(i) == ObJsonType) {
+                      common::ObSqlString check_sql;
+                      if (OB_FAIL(check_sql.append_fmt(
+                          "SELECT JSON_VALID(%.*s) AS is_valid", literal_pos, literal_buf))) {
+                      } else {
+                        SMART_VAR(common::ObMySQLProxy::MySQLResult, check_res) {
+                          common::sqlclient::ObMySQLResult *check_result = nullptr;
+                          int64_t is_valid = 0;
+                          valid_value = proxy_->read(check_res, check_sql.ptr()) == OB_SUCCESS &&
+                              OB_NOT_NULL(check_result = check_res.get_result()) &&
+                              check_result->next() == OB_SUCCESS &&
+                              check_result->get_int("is_valid", is_valid) == OB_SUCCESS &&
+                              is_valid == 1;
+                        }
+                      }
+                    } else if ((column_result_types.at(i) == ObVarcharType ||
+                                column_result_types.at(i) == ObCharType) &&
+                               value.is_string_type() && column_lengths.at(i) > 0 &&
+                               value.get_string().length() > column_lengths.at(i)) {
+                      common::ObSqlString check_sql;
+                      if (OB_FAIL(check_sql.append_fmt(
+                          "SELECT CHAR_LENGTH(%.*s) AS n", literal_pos, literal_buf))) {
+                      } else {
+                        SMART_VAR(common::ObMySQLProxy::MySQLResult, check_res) {
+                          common::sqlclient::ObMySQLResult *check_result = nullptr;
+                          int64_t character_count = 0;
+                          valid_value = proxy_->read(check_res, check_sql.ptr()) == OB_SUCCESS &&
+                              OB_NOT_NULL(check_result = check_res.get_result()) &&
+                              check_result->next() == OB_SUCCESS &&
+                              check_result->get_int("n", character_count) == OB_SUCCESS &&
+                              character_count <= column_lengths.at(i);
+                        }
+                      }
+                    }
+                    if (OB_SUCC(ret) && valid_value &&
+                        OB_FAIL(terminal_sql.append(literal_buf, literal_pos))) {
+                    }
                   }
                 }
               }
+              any_failure = any_failure || !valid_value;
               if (OB_SUCC(ret) && !valid_value && OB_FAIL(terminal_sql.append("NULL"))) {
               }
               if (OB_SUCC(ret) && OB_FAIL(terminal_sql.append_fmt(
@@ -381,62 +453,146 @@ private:
               }
             }
           }
-          if (OB_SUCC(ret) && OB_FAIL(terminal_sql.append_fmt(
-                               " WHERE %s", rowkey_sql.ptr()))) {
-          } else if (OB_SUCC(ret) && OB_FAIL(
-                         trans.write(terminal_sql.ptr(), affected_rows))) {
+      if (OB_SUCC(ret) && OB_FAIL(terminal_sql.append_fmt(
+          " WHERE %s", rowkey_sql.ptr()))) {
+      }
+      common::ObMySQLTransaction publish_trans;
+      if (OB_SUCC(ret) && OB_FAIL(publish_trans.start(proxy_))) {
+      } else if (OB_SUCC(ret)) {
+        common::ObSqlString lock_sql;
+        if (OB_FAIL(lock_sql.append_fmt("SELECT 1 FROM %s WHERE %s FOR UPDATE",
+                                        table_sql.ptr(), rowkey_sql.ptr()))) {
+        } else {
+          SMART_VAR(common::ObMySQLProxy::MySQLResult, row_res) {
+            if (OB_FAIL(publish_trans.read(row_res, lock_sql.ptr()))) {
+            }
           }
-        } else if (OB_FAIL(trans.write(update_sql.ptr(), affected_rows))) {
         }
-        if (OB_SUCC(ret) && OB_FAIL(delete_sql.append_fmt(
+      }
+      int64_t active_count = 0;
+      if (OB_SUCC(ret)) {
+        common::ObSqlString verify_sql;
+        if (OB_FAIL(verify_sql.append_fmt(
+            "SELECT COUNT(*) AS n FROM oceanbase.__all_ai_column_task task "
+            "JOIN oceanbase.__all_ai_column ai ON ai.table_id=task.table_id "
+            "AND ai.column_id=task.column_id "
+            "AND ai.definition_version=task.definition_version "
+            "WHERE task.table_id=%ld AND task.request_id=%s "
+            "AND task.rowkey_predicate=%s AND task.state=1 FOR UPDATE",
+            table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
+        } else {
+          SMART_VAR(common::ObMySQLProxy::MySQLResult, verify_res) {
+            common::sqlclient::ObMySQLResult *result = nullptr;
+            if (OB_FAIL(publish_trans.read(verify_res, verify_sql.ptr()))) {
+            } else if (OB_ISNULL(result = verify_res.get_result())) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (OB_FAIL(result->next())) {
+            } else if (OB_FAIL(result->get_int("n", active_count))) {
+            }
+          }
+        }
+      }
+      if (OB_SUCC(ret) && active_count == column_updates.count()) {
+        int64_t affected_rows = 0;
+        if (any_failure && retry_count < max_retries) {
+          common::ObSqlString retry_sql;
+          if (OB_FAIL(retry_sql.append_fmt(
+              "UPDATE oceanbase.__all_ai_column_task SET state=3, "
+              "retry_count=retry_count+1, eligible_ts=DATE_ADD(NOW(6), INTERVAL 1 SECOND) "
+              "WHERE table_id=%ld AND request_id=%s AND rowkey_predicate=%s AND state=1",
+              table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
+          } else if (OB_FAIL(publish_trans.write(retry_sql.ptr(), affected_rows))) {
+          }
+        } else if (OB_FAIL(publish_trans.write(terminal_sql.ptr(), affected_rows))) {
+          publish_value_failed = true;
+        } else if (OB_FAIL(delete_sql.append_fmt(
             "DELETE FROM oceanbase.__all_ai_column_task WHERE table_id=%ld "
             "AND request_id=%s AND rowkey_predicate=%s",
             table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
-        } else if (OB_SUCC(ret) && OB_FAIL(trans.write(delete_sql.ptr(), affected_rows))) {
+        } else if (OB_FAIL(publish_trans.write(delete_sql.ptr(), affected_rows))) {
         }
       }
-    }
-    if (trans.is_started()) {
-      int end_ret = trans.end(OB_SUCC(ret));
-      if (OB_SUCC(ret)) {
-        ret = end_ret;
+      if (publish_trans.is_started()) {
+        int end_ret = publish_trans.end(OB_SUCC(ret));
+        if (OB_SUCC(ret)) {
+          ret = end_ret;
+        }
       }
-    }
-    if (OB_FAIL(ret) && has_task && !failure_sql.empty()) {
-      int original_error = ret;
-      common::ObMySQLTransaction retry_trans;
-      int retry_ret = OB_SUCCESS;
-      int64_t affected_rows = 0;
-      common::ObSqlString retry_sql;
-      if (OB_FAIL(retry_trans.start(proxy_))) {
-        retry_ret = ret;
-      } else if (retry_count < max_retries) {
-        if (OB_FAIL(retry_sql.append_fmt(
-            "UPDATE oceanbase.__all_ai_column_task SET state=3, "
-            "retry_count=retry_count+1, eligible_ts=DATE_ADD(NOW(6), INTERVAL 1 SECOND) "
-            "WHERE table_id=%ld AND request_id=%s AND rowkey_predicate=%s",
+      if (publish_value_failed) {
+        // A target column may reject a value after expression evaluation (for
+        // example because of a type or length constraint). Roll back the
+        // group and record a retry or a terminal failure in a fresh transaction.
+        ret = OB_SUCCESS;
+        common::ObMySQLTransaction failure_trans;
+        common::ObSqlString lock_sql;
+        common::ObSqlString verify_sql;
+        int64_t current_tasks = 0;
+        if (OB_FAIL(failure_trans.start(proxy_))) {
+        } else if (OB_FAIL(lock_sql.append_fmt(
+            "SELECT 1 FROM %s WHERE %s FOR UPDATE", table_sql.ptr(), rowkey_sql.ptr()))) {
+        } else {
+          SMART_VAR(common::ObMySQLProxy::MySQLResult, row_res) {
+            if (OB_FAIL(failure_trans.read(row_res, lock_sql.ptr()))) {
+            }
+          }
+        }
+        if (OB_SUCC(ret) && OB_FAIL(verify_sql.append_fmt(
+            "SELECT COUNT(*) AS n FROM oceanbase.__all_ai_column_task "
+            "WHERE table_id=%ld AND request_id=%s AND rowkey_predicate=%s "
+            "AND state=1 FOR UPDATE",
             table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
-          retry_ret = ret;
-        } else if (OB_FAIL(retry_trans.write(retry_sql.ptr(), affected_rows))) {
-          retry_ret = ret;
+        } else if (OB_SUCC(ret)) {
+          SMART_VAR(common::ObMySQLProxy::MySQLResult, verify_res) {
+            common::sqlclient::ObMySQLResult *result = nullptr;
+            if (OB_FAIL(failure_trans.read(verify_res, verify_sql.ptr()))) {
+            } else if (OB_ISNULL(result = verify_res.get_result())) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (OB_FAIL(result->next())) {
+            } else if (OB_FAIL(result->get_int("n", current_tasks))) {
+            }
+          }
         }
-      } else if (OB_FAIL(retry_trans.write(failure_sql.ptr(), affected_rows))) {
-        retry_ret = ret;
-      } else if (OB_FAIL(retry_sql.append_fmt(
-          "DELETE FROM oceanbase.__all_ai_column_task WHERE table_id=%ld "
-          "AND request_id=%s AND rowkey_predicate=%s",
-          table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
-        retry_ret = ret;
-      } else if (OB_FAIL(retry_trans.write(retry_sql.ptr(), affected_rows))) {
-        retry_ret = ret;
-      }
-      if (retry_trans.is_started()) {
-        int end_ret = retry_trans.end(retry_ret == OB_SUCCESS);
-        if (retry_ret == OB_SUCCESS) {
-          retry_ret = end_ret;
+        if (OB_SUCC(ret) && current_tasks == column_ids.count()) {
+          int64_t affected_rows = 0;
+          common::ObSqlString failure_sql;
+          if (retry_count < max_retries) {
+            if (OB_FAIL(failure_sql.append_fmt(
+                "UPDATE oceanbase.__all_ai_column_task SET state=3, "
+                "retry_count=retry_count+1, eligible_ts=DATE_ADD(NOW(6), INTERVAL 1 SECOND) "
+                "WHERE table_id=%ld AND request_id=%s AND rowkey_predicate=%s AND state=1",
+                table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
+            } else if (OB_FAIL(failure_trans.write(failure_sql.ptr(), affected_rows))) {
+            }
+          } else if (OB_FAIL(failure_sql.append_fmt("UPDATE %s SET ", table_sql.ptr()))) {
+          } else {
+            for (int64_t i = 0; OB_SUCC(ret) && i < column_ids.count(); ++i) {
+              if (i > 0 && OB_FAIL(failure_sql.append(", "))) {
+              } else if (OB_FAIL(failure_sql.append(column_names.at(i)))) {
+              } else if (OB_FAIL(failure_sql.append_fmt(
+                  "=NULL, `__ai_state_%ld`=2, `__ai_request_%ld`=%s",
+                  column_ids.at(i), column_ids.at(i), request_literal.ptr()))) {
+              }
+            }
+            if (OB_SUCC(ret) && OB_FAIL(failure_sql.append_fmt(
+                " WHERE %s", rowkey_sql.ptr()))) {
+            } else if (OB_SUCC(ret) && OB_FAIL(
+                failure_trans.write(failure_sql.ptr(), affected_rows))) {
+            } else if (OB_SUCC(ret) && OB_FAIL(delete_sql.append_fmt(
+                "DELETE FROM oceanbase.__all_ai_column_task WHERE table_id=%ld "
+                "AND request_id=%s AND rowkey_predicate=%s",
+                table_id, request_literal.ptr(), rowkey_literal.ptr()))) {
+            } else if (OB_SUCC(ret) && OB_FAIL(
+                failure_trans.write(delete_sql.ptr(), affected_rows))) {
+            }
+          }
+        }
+        if (failure_trans.is_started()) {
+          int end_ret = failure_trans.end(OB_SUCC(ret));
+          if (OB_SUCC(ret)) {
+            ret = end_ret;
+          }
         }
       }
-      ret = retry_ret == OB_SUCCESS ? OB_SUCCESS : original_error;
     }
     return ret;
   }
@@ -1923,6 +2079,8 @@ int ObServer::stop()
     FLOG_INFO("sql nio stopped");
 
 
+    ai_column_worker.stop();
+    ai_column_worker.wait();
     FLOG_INFO("begin to stop schema service");
     schema_service_.stop();
     FLOG_INFO("schema service stopped");
@@ -2371,7 +2529,7 @@ int ObServer::init_sql_proxy()
   int ret = OB_SUCCESS;
   if (OB_FAIL(sql_proxy_.init(false /* is_ddl */))) {
   } else if (OB_FAIL(ddl_sql_proxy_.init(true /* is_ddl */))) {
-  } else if (OB_FAIL(ai_column_worker.start(server_gtimer_, sql_proxy_))) {
+  } else if (OB_FAIL(ai_column_worker.start(sql_proxy_))) {
   }
   return ret;
 }

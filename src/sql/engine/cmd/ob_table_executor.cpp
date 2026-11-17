@@ -99,10 +99,11 @@ static int rewrite_ai_retry_predicate(const ObString &input, uint64_t column_id,
   return ret;
 }
 
-static int execute_ai_column_retry(ObExecContext &ctx, ObAlterTableStmt &stmt)
+static int execute_ai_column_retry(uint64_t table_id,
+                                   const ObString &column_name,
+                                   const ObString &retry_predicate)
 {
   int ret = OB_SUCCESS;
-  UNUSED(ctx);
   ObSchemaGetterGuard fresh_guard;
   ObSchemaGetterGuard *guard = &fresh_guard;
   const ObTableSchema *table = NULL;
@@ -118,11 +119,10 @@ static int execute_ai_column_retry(ObExecContext &ctx, ObAlterTableStmt &stmt)
   if (OB_ISNULL(GCTX.schema_service_) || OB_ISNULL(GCTX.sql_proxy_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(GCTX.schema_service_->get_runtime_schema_guard(fresh_guard))) {
-  } else if (OB_FAIL(guard->get_table_schema(
-                         stmt.get_alter_table_schema().get_table_id(), table))) {
+  } else if (OB_FAIL(guard->get_table_schema(table_id, table))) {
   } else if (OB_ISNULL(table)) {
     ret = OB_SCHEMA_ERROR;
-  } else if (OB_ISNULL(column = table->get_column_schema(stmt.get_ai_retry_column())) ||
+  } else if (OB_ISNULL(column = table->get_column_schema(column_name)) ||
              !column->is_ai_column()) {
     ret = OB_ERR_BAD_FIELD_ERROR;
   } else if (OB_FAIL(guard->get_database_schema(table->get_database_id(), database))) {
@@ -134,7 +134,7 @@ static int execute_ai_column_retry(ObExecContext &ctx, ObAlterTableStmt &stmt)
   } else if (OB_FAIL(ObResolverUtils::append_escaped_identifier(
                          table_sql, table->get_table_name_str()))) {
   } else if (OB_FAIL(rewrite_ai_retry_predicate(
-                         stmt.get_ai_retry_predicate(), column->get_column_id(), predicate))) {
+                         retry_predicate, column->get_column_id(), predicate))) {
   } else if (OB_FAIL(select_sql.append("SELECT "))) {
   }
   if (ret != OB_SUCCESS) {
@@ -975,7 +975,8 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
   if (OB_FAIL(ret)) {
     // do nothing
   } else if (stmt.is_ai_retry()) {
-    ret = execute_ai_column_retry(ctx, stmt);
+    ret = execute_ai_column_retry(stmt.get_alter_table_schema().get_table_id(),
+                                  stmt.get_ai_retry_column(), stmt.get_ai_retry_predicate());
   } else if (stmt.is_alter_triggers()) {
     if (stmt.get_tg_arg().trigger_infos_.count() > 0) {
       stmt.get_tg_arg().ddl_stmt_str_ = first_stmt;
@@ -1078,6 +1079,24 @@ int ObAlterTableExecutor::execute(ObExecContext &ctx, ObAlterTableStmt &stmt)
         } else if (OB_FAIL(ObDDLExecutorUtil::wait_ddl_finish(
             res.task_id_, res.ddl_need_retry_at_executor_, my_session,
             *ctx.get_query_runtime_environment(), ctx.local_command_service(), is_support_cancel))) {
+        }
+      }
+    }
+    if (OB_SUCC(ret) && alter_table_arg.is_alter_columns_) {
+      const share::schema::AlterTableSchema &alter_schema = alter_table_arg.alter_table_schema_;
+      for (ObTableSchema::const_column_iterator iter = alter_schema.column_begin();
+           OB_SUCC(ret) && iter != alter_schema.column_end(); ++iter) {
+        const share::schema::AlterColumnSchema *column =
+            static_cast<const share::schema::AlterColumnSchema *>(*iter);
+        if (OB_ISNULL(column)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (column->alter_type_ == OB_DDL_ADD_COLUMN && column->is_ai_column()) {
+          if (OB_FAIL(refresh_schema_for_table())) {
+          } else if (OB_FAIL(execute_ai_column_retry(alter_schema.get_table_id(),
+                                                     column->get_column_name_str(), ObString()))) {
+            LOG_WARN("failed to enqueue existing rows for added AI column", KR(ret),
+                     "column", column->get_column_name_str());
+          }
         }
       }
     }

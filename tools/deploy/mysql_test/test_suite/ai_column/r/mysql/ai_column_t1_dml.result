@@ -17,6 +17,9 @@ tags json AI COLUMN (
 AI_COMPLETE('p0_t1_complete', concat('Classify: ', content))
 ) WITH (sync_mode='async', max_retries=2)
 );
+insert into ai_column_p0_t1.docs(id, title, content, tags)
+values(99, 'blocked', 'blocked', null);
+ERROR 0A000: writing AI result column not supported
 start transaction;
 insert into ai_column_p0_t1.docs(id, title, content)
 values(1, 'title-1', 'initial');
@@ -37,6 +40,11 @@ json_unquote(json_extract(tags, '$.input')) = 'Classify: initial' as initial_val
 from ai_column_p0_t1.docs where id = 1;
 initial_worker_completed	initial_value
 1	1
+insert into ai_column_p0_t1.docs values(98, 'positional-safe', 'positional-safe');
+select 1 = 1 as positional_insert_omits_ai_result;
+positional_insert_omits_ai_result
+1
+delete from ai_column_p0_t1.docs where id = 98;
 update ai_column_p0_t1.docs set title = 'title-2' where id = 1;
 select tags is not null as unrelated_update_keeps_result
 from ai_column_p0_t1.docs where id = 1;

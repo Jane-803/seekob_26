@@ -2218,7 +2218,16 @@ int ObDelUpdResolver::resolve_insert_columns(const ParseNode *node,
       for (int64_t i = 0; OB_SUCC(ret) && i < N; i++) {
         uint64_t column_id = column_items.at(i).column_id_;
         bool is_duplicate = false;
-        if (OB_FAIL(check_insert_column_duplicate(column_id, is_duplicate))) {
+        const ObColumnSchemaV2 *ai_column = NULL;
+        if (table_item->is_basic_table() && session_info_->is_user_session() &&
+            !session_info_->get_ddl_info().is_ddl() &&
+            (session_info_->get_cur_exec_ctx() == NULL ||
+             !session_info_->get_cur_exec_ctx()->get_das_ctx().is_ai_column_task_) &&
+            OB_FAIL(schema_checker_->get_column_schema(table_item->ref_id_, column_id,
+                                                       ai_column, true))) {
+        } else if (ai_column != NULL && ai_column->is_ai_column()) {
+          continue;
+        } else if (OB_FAIL(check_insert_column_duplicate(column_id, is_duplicate))) {
         } else if (is_duplicate) {
           ret = OB_ERR_FIELD_SPECIFIED_TWICE;
           ObCStringHelper helper;
