@@ -423,6 +423,29 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
           }
           break;
         }
+        case T_AI_COLUMN_RETRY: {
+          if (alter_table_stmt->get_alter_table_action_count() != 1 ||
+              action_node->num_child_ != 2 || OB_ISNULL(action_node->children_[0])) {
+            ret = OB_NOT_SUPPORTED;
+          } else {
+            const ParseNode *name_node = action_node->children_[0];
+            const ObString column_name(name_node->str_len_, name_node->str_value_);
+            const ObColumnSchemaV2 *column = table_schema_->get_column_schema(column_name);
+            ObString saved_name;
+            ObString saved_predicate;
+            if (OB_ISNULL(column) || !column->is_ai_column()) {
+              ret = OB_ERR_BAD_FIELD_ERROR;
+            } else if (OB_FAIL(ob_write_string(*allocator_, column_name, saved_name))) {
+            } else if (action_node->str_len_ > 0 &&
+                       OB_FAIL(ob_write_string(*allocator_,
+                           ObString(action_node->str_len_, action_node->str_value_),
+                           saved_predicate))) {
+            } else {
+              alter_table_stmt->set_ai_retry(saved_name, saved_predicate);
+            }
+          }
+          break;
+        }
         //deal with add column, alter column, drop column, change column, modify column
         case T_ALTER_COLUMN_OPTION: {
             alter_table_stmt->set_alter_table_column();
@@ -711,6 +734,10 @@ int ObAlterTableResolver::resolve_action_list(const ParseNode &node)
     }
     if (OB_SUCC(ret)) {
       if (alter_table_stmt->get_alter_table_action_count() > 1) {
+        if (alter_table_stmt->is_ai_retry()) {
+          ret = OB_NOT_SUPPORTED;
+          LOG_USER_ERROR(OB_NOT_SUPPORTED, "RETRY AI COLUMN with another ALTER action");
+        }
         if(0 != alter_table_stmt->get_foreign_key_arg_list().count()) {
           // suppored in mysql
           ret = OB_NOT_SUPPORTED;

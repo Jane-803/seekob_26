@@ -1967,6 +1967,54 @@ int ObDMLResolver::resolve_basic_column_item(const TableItem &table_item,
       }
     }
   }
+  if (OB_SUCC(ret) && col_item != NULL && !include_hidden &&
+      current_scope_ != T_INSERT_SCOPE && table_item.is_basic_table() &&
+      session_info_->is_user_session() && !session_info_->is_inner()) {
+    bool strict_read = false;
+    const ObTableSchema *table_schema = NULL;
+    const ObColumnSchemaV2 *column_schema = NULL;
+    if (OB_FAIL(session_info_->get_sys_variable(
+                    share::SYS_VAR_AI_COLUMN_STRICT_READ, strict_read))) {
+    } else if (strict_read &&
+               OB_FAIL(schema_checker_->get_table_schema(table_item.ref_id_, table_schema))) {
+    } else if (strict_read && OB_NOT_NULL(table_schema) &&
+               OB_NOT_NULL(column_schema = table_schema->get_column_schema(col_item->column_id_)) &&
+               column_schema->is_ai_column()) {
+      if (OB_NOT_NULL(get_stmt()->get_query_ctx())) {
+        ObQueryHint &query_hint = get_stmt()->get_query_ctx()->get_query_hint_for_update();
+        ObGlobalHint &global_hint = const_cast<ObGlobalHint &>(query_hint.get_global_hint());
+        global_hint.merge_plan_cache_hint(OB_USE_PLAN_CACHE_NONE);
+      }
+      const ObDatabaseSchema *database_schema = NULL;
+      ObSqlString sql;
+      if (OB_FAIL(schema_guard->get_database_schema(table_schema->get_database_id(),
+                                                    database_schema))) {
+      } else if (OB_ISNULL(database_schema) || OB_ISNULL(GCTX.sql_proxy_)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(sql.append("SELECT 1 FROM "))) {
+      } else if (OB_FAIL(ObResolverUtils::append_escaped_identifier(
+                             sql, database_schema->get_database_name_str()))) {
+      } else if (OB_FAIL(sql.append("."))) {
+      } else if (OB_FAIL(ObResolverUtils::append_escaped_identifier(
+                             sql, table_schema->get_table_name_str()))) {
+      } else if (OB_FAIL(sql.append_fmt(
+                  " WHERE `__ai_state_%lu` IS NULL OR `__ai_state_%lu` <> 1 LIMIT 1",
+                  column_schema->get_column_id(), column_schema->get_column_id()))) {
+      } else {
+        SMART_VAR(ObMySQLProxy::MySQLResult, result) {
+          sqlclient::ObMySQLResult *rows = NULL;
+          if (OB_FAIL(GCTX.sql_proxy_->read(result, sql.ptr()))) {
+          } else if (OB_ISNULL(rows = result.get_result())) {
+            ret = OB_ERR_UNEXPECTED;
+          } else if (rows->next() == OB_SUCCESS) {
+            ret = OB_AI_COLUMN_NOT_READY;
+            LOG_USER_ERROR(OB_AI_COLUMN_NOT_READY,
+                           table_schema->get_table_id(), column_schema->get_column_id());
+          }
+        }
+      }
+    }
+  }
   return ret;
 }
 
