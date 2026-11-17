@@ -41,6 +41,64 @@ using namespace share;
 using namespace obcall;
 namespace sql
 {
+static int add_ai_result_prompt(const ObString &expr, const char *hint, ObSqlString &out)
+{
+  int ret = OB_SUCCESS;
+  int64_t first_comma = -1;
+  int64_t prompt_end = -1;
+  int64_t depth = 0;
+  char quote = 0;
+  for (int64_t i = 0; i < expr.length() && prompt_end < 0; ++i) {
+    const char c = expr.ptr()[i];
+    if (quote != 0) {
+      if (c == '\\' && i + 1 < expr.length()) {
+        ++i;
+      } else if (c == quote) {
+        if (i + 1 < expr.length() && expr.ptr()[i + 1] == quote) {
+          ++i;
+        } else {
+          quote = 0;
+        }
+      }
+    } else if (c == '\'' || c == '"' || c == '`') {
+      quote = c;
+    } else if (c == '(') {
+      ++depth;
+    } else if (c == ')') {
+      if (depth == 1) {
+        prompt_end = i;
+      }
+      --depth;
+    } else if (c == ',' && depth == 1) {
+      if (first_comma < 0) {
+        first_comma = i;
+      } else {
+        prompt_end = i;
+      }
+    }
+  }
+  if (first_comma < 0 || prompt_end <= first_comma || depth < 0) {
+    ret = OB_INVALID_ARGUMENT;
+  } else if (expr.ptr()[prompt_end] == ',') {
+    int64_t closing = expr.length() - 1;
+    while (closing > prompt_end && expr.ptr()[closing] != ')') {
+      --closing;
+    }
+    if (closing <= prompt_end) {
+      ret = OB_INVALID_ARGUMENT;
+    } else if (OB_FAIL(out.append_fmt(
+        "%.*s, CAST(JSON_SET(COALESCE(%.*s, JSON_OBJECT()), '$.system_prompt', '%s') AS CHAR)%.*s",
+        static_cast<int>(prompt_end), expr.ptr(),
+        static_cast<int>(closing - prompt_end - 1), expr.ptr() + prompt_end + 1,
+        hint, static_cast<int>(expr.length() - closing), expr.ptr() + closing))) {
+    }
+  } else if (OB_FAIL(out.append_fmt("%.*s, CAST(JSON_OBJECT('system_prompt', '%s') AS CHAR)%.*s",
+      static_cast<int>(prompt_end), expr.ptr(), hint,
+      static_cast<int>(expr.length() - prompt_end), expr.ptr() + prompt_end))) {
+  }
+  return ret;
+}
+
 static int collect_ai_column_dependencies(const ParseNode *node,
     const ObTableSchema &table_schema, ObSEArray<uint64_t, 4> &ids)
 {
@@ -2012,8 +2070,19 @@ int ObDDLResolver::resolve_column_definition(ObColumnSchemaV2 &column,
                                                   dependencies.at(i)))) {
             }
           }
-          if (OB_SUCC(ret) &&
-              OB_FAIL(column.set_ai_expr(ObString(expr->str_len_, expr->str_value_)))) {
+          ObString normalized_expr(expr->str_len_, expr->str_value_);
+          ObSqlString prompted_expr;
+          const char *result_hint = column.get_data_type() == ObJsonType
+              ? "Return exactly one valid JSON value."
+              : ob_is_integer_type(column.get_data_type())
+                  ? "Return exactly one base-10 integer." : NULL;
+          if (OB_SUCC(ret) && function_name.case_compare("AI_COMPLETE") == 0 &&
+              result_hint != NULL &&
+              OB_FAIL(add_ai_result_prompt(normalized_expr, result_hint, prompted_expr))) {
+          } else if (OB_SUCC(ret) && !prompted_expr.empty()) {
+            normalized_expr = prompted_expr.string();
+          }
+          if (OB_SUCC(ret) && OB_FAIL(column.set_ai_expr(normalized_expr))) {
           } else if (OB_SUCC(ret) &&
               OB_FAIL(column.set_ai_dependency_ids(dependency_ids.string()))) {
           } else if (OB_SUCC(ret)) {
