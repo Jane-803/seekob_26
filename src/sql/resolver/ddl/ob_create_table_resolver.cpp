@@ -896,6 +896,43 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
       }
     }
 
+    for (int64_t i = 0; OB_SUCC(ret) && i < resolved_cols_count; ++i) {
+      if (!resolved_cols.at(i).is_ai_column()) {
+        continue;
+      }
+      const uint64_t result_id = resolved_cols.at(i).get_column_id();
+      uint64_t hidden_ids[3] = {OB_INVALID_ID, OB_INVALID_ID, OB_INVALID_ID};
+      const char *kinds[3] = {"state", "request", "result_spec"};
+      for (int64_t j = 0; OB_SUCC(ret) && j < 3; ++j) {
+        ObColumnSchemaV2 hidden;
+        ObSqlString name;
+        hidden_ids[j] = gen_column_id();
+        hidden.set_column_id(hidden_ids[j]);
+        hidden.set_is_hidden(true);
+        hidden.set_nullable(true);
+        hidden.set_data_type(j == 0 ? ObIntType : ObVarcharType);
+        if (j != 0) {
+          hidden.set_data_length(128);
+          hidden.set_charset_type(CHARSET_UTF8MB4);
+          hidden.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
+        }
+        if (OB_FAIL(name.append_fmt("__ai_%s_%lu", kinds[j], result_id))) {
+        } else if (OB_FAIL(hidden.set_column_name(name.string()))) {
+        } else if (OB_FAIL(table_schema.add_column(hidden))) {
+        }
+      }
+      if (OB_SUCC(ret)) {
+        ObColumnSchemaV2 *result = table_schema.get_column_schema(result_id);
+        if (OB_ISNULL(result)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else {
+          result->set_ai_state_column_id(hidden_ids[0]);
+          result->set_ai_request_column_id(hidden_ids[1]);
+          result->set_ai_result_spec_column_id(hidden_ids[2]);
+        }
+      }
+    }
+
     // A table must have at least one column as a visible column
     if (OB_SUCC(ret)) {
       // RESOLVE_NON_COL == resolve_rule when, only parse non-column definitions

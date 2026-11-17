@@ -41,6 +41,33 @@ using namespace share;
 using namespace obcall;
 namespace sql
 {
+static int collect_ai_column_dependencies(const ParseNode *node,
+    const ObTableSchema &table_schema, ObSEArray<uint64_t, 4> &ids)
+{
+  int ret = OB_SUCCESS;
+  if (OB_ISNULL(node)) {
+  } else if (node->type_ == T_COLUMN_REF) {
+    if (node->num_child_ != 3 || OB_ISNULL(node->children_) ||
+        OB_ISNULL(node->children_[2]) || OB_ISNULL(node->children_[2]->str_value_)) {
+      ret = OB_INVALID_ARGUMENT;
+    } else {
+      const ParseNode *name_node = node->children_[2];
+      const ObString name(name_node->str_len_, name_node->str_value_);
+      const ObColumnSchemaV2 *dependency = table_schema.get_column_schema(name);
+      if (OB_ISNULL(dependency) || dependency->is_ai_column()) {
+        ret = OB_NOT_SUPPORTED;
+      } else if (!has_exist_in_array(ids, dependency->get_column_id())) {
+        ret = ids.push_back(dependency->get_column_id());
+      }
+    }
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < node->num_child_; ++i) {
+      ret = collect_ai_column_dependencies(node->children_[i], table_schema, ids);
+    }
+  }
+  return ret;
+}
+
 ObDDLResolver::ObDDLResolver(ObResolverParams &params)
   : ObStmtResolver(params),
     block_size_(OB_DEFAULT_SSTABLE_BLOCK_SIZE),
@@ -1906,6 +1933,94 @@ int ObDDLResolver::resolve_column_definition(ObColumnSchemaV2 &column,
       }
       if (OB_SUCC(ret) && is_pad_char_to_full_length(session_info_->get_sql_mode())) {
         column.add_column_flag(PAD_WHEN_CALC_GENERATED_COLUMN_FLAG);
+      }
+    }
+  }
+  if (OB_SUCC(ret) && node->num_child_ == 5) {
+    ParseNode *spec = node->children_[4];
+    ParseNode *function = spec != NULL && spec->num_child_ == 2 &&
+        spec->children_ != NULL ? spec->children_[0] : NULL;
+    int64_t max_retries = 2;
+    bool seen_sync_mode = false;
+    bool seen_max_retries = false;
+    if (OB_ISNULL(spec) || spec->type_ != T_AI_COLUMN_SPEC ||
+        spec->num_child_ != 2 || OB_ISNULL(function) ||
+        function->type_ != T_FUN_SYS || function->num_child_ != 2 ||
+        OB_ISNULL(function->children_[0]) ||
+        OB_ISNULL(function->children_[0]->str_value_)) {
+      ret = OB_NOT_SUPPORTED;
+    } else {
+      const ParseNode *function_name_node = function->children_[0];
+      const ObString function_name(function_name_node->str_len_, function_name_node->str_value_);
+      if (function_name.case_compare("AI_COMPLETE") != 0 &&
+          function_name.case_compare("AI_EMBED") != 0) {
+        ret = OB_NOT_SUPPORTED;
+      } else if (function_name.case_compare("AI_EMBED") == 0 && !column.is_collection()) {
+        ret = OB_INVALID_ARGUMENT;
+      } else if (function_name.case_compare("AI_EMBED") == 0) {
+        const ParseNode *args = function->children_[1];
+        int64_t vector_dim = 0;
+        if (OB_ISNULL(args) || args->num_child_ < 2 || args->num_child_ > 3) {
+          ret = OB_INVALID_ARGUMENT;
+        } else if (OB_FAIL(ObVectorIndexUtil::get_vector_dim_from_extend_type_info(
+                       column.get_extended_type_info(), vector_dim))) {
+        } else if (vector_dim <= 0 ||
+                   (args->num_child_ == 3 &&
+                    (OB_ISNULL(args->children_[2]) ||
+                     args->children_[2]->type_ != T_INT ||
+                     args->children_[2]->value_ <= 0 ||
+                     args->children_[2]->value_ != vector_dim))) {
+          ret = OB_INVALID_ARGUMENT;
+        }
+      }
+      ParseNode *options = spec->children_[1];
+      for (int64_t i = 0; OB_SUCC(ret) && options != NULL &&
+                          i < options->num_child_; ++i) {
+        ParseNode *option = options->children_[i];
+        if (OB_ISNULL(option) || option->type_ != T_AI_COLUMN_OPTION ||
+            option->num_child_ != 2 || OB_ISNULL(option->children_[0]) ||
+            OB_ISNULL(option->children_[1])) {
+          ret = OB_INVALID_ARGUMENT;
+        } else {
+          ObString key(option->children_[0]->str_len_, option->children_[0]->str_value_);
+          ParseNode *value = option->children_[1];
+          if (key.case_compare("sync_mode") == 0 && !seen_sync_mode &&
+              value->type_ == T_VARCHAR) {
+            seen_sync_mode = true;
+            ObString mode(value->str_len_, value->str_value_);
+            if (mode.case_compare("async") != 0) {
+              ret = OB_NOT_SUPPORTED;
+            }
+          } else if (key.case_compare("max_retries") == 0 && !seen_max_retries &&
+                     value->type_ == T_INT && value->value_ >= 0 && value->value_ <= 100) {
+            seen_max_retries = true;
+            max_retries = value->value_;
+          } else {
+            ret = OB_INVALID_ARGUMENT;
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        ParseNode *expr = spec->children_[0];
+        ObSEArray<uint64_t, 4> dependencies;
+        ObSqlString dependency_ids;
+        if (OB_ISNULL(expr->str_value_) || expr->str_len_ <= 0 ||
+            OB_FAIL(collect_ai_column_dependencies(expr, table_schema, dependencies))) {
+        } else {
+          for (int64_t i = 0; OB_SUCC(ret) && i < dependencies.count(); ++i) {
+            if (OB_FAIL(dependency_ids.append_fmt("%s%lu", i == 0 ? "" : ",",
+                                                  dependencies.at(i)))) {
+            }
+          }
+          if (OB_SUCC(ret) &&
+              OB_FAIL(column.set_ai_expr(ObString(expr->str_len_, expr->str_value_)))) {
+          } else if (OB_SUCC(ret) &&
+              OB_FAIL(column.set_ai_dependency_ids(dependency_ids.string()))) {
+          } else if (OB_SUCC(ret)) {
+            column.set_ai_max_retries(max_retries);
+            column.add_column_flag(AI_COLUMN_FLAG);
+          }
+        }
       }
     }
   }

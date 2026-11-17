@@ -4169,6 +4169,63 @@ int ObSchemaServiceSQLImpl::fetch_column_info(const ObRefreshSchemaStatus &schem
       }
     }
   }
+  bool has_ai_column = false;
+  for (int64_t i = 0; OB_SUCC(ret) && i < table_schema->get_column_count(); ++i) {
+    const ObColumnSchemaV2 *column = table_schema->get_column_schema_by_idx(i);
+    has_ai_column = has_ai_column || (column != NULL && column->is_ai_column());
+  }
+  if (OB_SUCC(ret) && has_ai_column) {
+    ObSqlString ai_sql;
+    if (OB_FAIL(ai_sql.append_fmt(
+          "SELECT column_id, normalized_expr, dependency_ids, max_retries, "
+          "state_column_id, request_column_id, result_spec_column_id "
+          "FROM %s WHERE table_id = %lu", OB_ALL_AI_COLUMN_TNAME,
+          ObSchemaUtils::get_extract_schema_id(table_id)))) {
+    } else {
+      SMART_VAR(ObMySQLProxy::MySQLResult, ai_res) {
+        ObMySQLResult *ai_result = NULL;
+        DEFINE_SQL_CLIENT_RETRY_WEAK_WITH_SNAPSHOT(sql_client,
+            schema_status.snapshot_timestamp_);
+        if (OB_FAIL(sql_client_retry_weak.read(ai_res, ai_sql.ptr()))) {
+        } else if (OB_ISNULL(ai_result = ai_res.get_result())) {
+          ret = OB_ERR_UNEXPECTED;
+        } else {
+          while (OB_SUCC(ret) && OB_SUCC(ai_result->next())) {
+            uint64_t column_id = OB_INVALID_ID;
+            int64_t max_retries = 0;
+            uint64_t state_id = OB_INVALID_ID;
+            uint64_t request_id = OB_INVALID_ID;
+            uint64_t result_spec_id = OB_INVALID_ID;
+            ObString expr;
+            ObString dependencies;
+            EXTRACT_INT_FIELD_MYSQL(*ai_result, "column_id", column_id, uint64_t);
+            EXTRACT_VARCHAR_FIELD_MYSQL(*ai_result, "normalized_expr", expr);
+            EXTRACT_VARCHAR_FIELD_MYSQL(*ai_result, "dependency_ids", dependencies);
+            EXTRACT_INT_FIELD_MYSQL(*ai_result, "max_retries", max_retries, int64_t);
+            EXTRACT_INT_FIELD_MYSQL(*ai_result, "state_column_id", state_id, uint64_t);
+            EXTRACT_INT_FIELD_MYSQL(*ai_result, "request_column_id", request_id, uint64_t);
+            EXTRACT_INT_FIELD_MYSQL(*ai_result, "result_spec_column_id", result_spec_id, uint64_t);
+            if (OB_SUCC(ret)) {
+              ObColumnSchemaV2 *column = table_schema->get_column_schema(column_id);
+              if (OB_ISNULL(column)) {
+                ret = OB_SCHEMA_ERROR;
+              } else if (OB_FAIL(column->set_ai_expr(expr))) {
+              } else if (OB_FAIL(column->set_ai_dependency_ids(dependencies))) {
+              } else {
+                column->set_ai_max_retries(max_retries);
+                column->set_ai_state_column_id(state_id);
+                column->set_ai_request_column_id(request_id);
+                column->set_ai_result_spec_column_id(result_spec_id);
+              }
+            }
+          }
+          if (OB_ITER_END == ret) {
+            ret = OB_SUCCESS;
+          }
+        }
+      }
+    }
+  }
   return ret;
 }
 

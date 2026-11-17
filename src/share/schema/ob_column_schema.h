@@ -199,6 +199,19 @@ int assign(const ObColumnSchemaV2 &src_schema);
   inline bool is_geometry() const { return meta_type_.is_geometry(); }
   inline bool is_decimal_int() const { return meta_type_.is_decimal_int(); }
   inline bool is_string_lob() const { return column_flags_ & STRING_LOB_COLUMN_FLAG; }
+  inline bool is_ai_column() const { return column_flags_ & AI_COLUMN_FLAG; }
+  int set_ai_expr(const common::ObString &expr) { return deep_copy_str(expr, ai_expr_); }
+  const common::ObString &get_ai_expr() const { return ai_expr_; }
+  int set_ai_dependency_ids(const common::ObString &ids) { return deep_copy_str(ids, ai_dependency_ids_); }
+  const common::ObString &get_ai_dependency_ids() const { return ai_dependency_ids_; }
+  void set_ai_max_retries(int64_t value) { ai_max_retries_ = value; }
+  int64_t get_ai_max_retries() const { return ai_max_retries_; }
+  void set_ai_state_column_id(uint64_t value) { ai_state_column_id_ = value; }
+  void set_ai_request_column_id(uint64_t value) { ai_request_column_id_ = value; }
+  void set_ai_result_spec_column_id(uint64_t value) { ai_result_spec_column_id_ = value; }
+  uint64_t get_ai_state_column_id() const { return ai_state_column_id_; }
+  uint64_t get_ai_request_column_id() const { return ai_request_column_id_; }
+  uint64_t get_ai_result_spec_column_id() const { return ai_result_spec_column_id_; }
   inline bool is_key_forbid_lob() const { return ob_is_text_tc(meta_type_.get_type()) && !is_string_lob(); }
 
   inline bool is_collection() const { return meta_type_.is_collection_sql_type(); }
@@ -381,6 +394,12 @@ private:
   common::ObString column_name_;
   common::ObString comment_;
   common::ObArrayHelper<common::ObString> extended_type_info_;//used for enum and set
+  common::ObString ai_expr_;
+  common::ObString ai_dependency_ids_;
+  int64_t ai_max_retries_;
+  uint64_t ai_state_column_id_;
+  uint64_t ai_request_column_id_;
+  uint64_t ai_result_spec_column_id_;
   uint64_t prev_column_id_;
   uint64_t next_column_id_;
   int64_t encoding_type_; // for test, no need serialization

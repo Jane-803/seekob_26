@@ -19,6 +19,9 @@
 #include "config_bridge.h"
 #include "sql/engine/dml/ob_table_insert_op.h"
 #include "sql/engine/dml/ob_dml_service.h"
+#include "sql/resolver/ob_resolver_utils.h"
+#include "share/inner_table/ob_inner_table_schema.h"
+#include "lib/utility/utility.h"
 
 
 namespace oceanbase
@@ -227,6 +230,98 @@ OB_INLINE int ObTableInsertOp::insert_row_to_das()
                                                                 eval_ctx_))) {
       } else if (OB_FAIL(ObDMLService::insert_row(ins_ctdef, ins_rtdef, tablet_loc, dml_rtctx_, modify_row.new_row_))) {
       } else if (need_after_row_process(ins_ctdef) && OB_FAIL(dml_modify_rows_.push_back(modify_row))) {
+      }
+      if (OB_SUCC(ret) && j == 0 && ins_ctdef.is_primary_index_ &&
+          !is_sys_table(ins_ctdef.das_ctdef_.index_tid_)) {
+        ObSchemaGetterGuard *schema_guard = ctx_.get_sql_ctx()->schema_guard_;
+        const ObTableSchema *table_schema = NULL;
+        if (OB_ISNULL(schema_guard)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(schema_guard->get_table_schema(ins_ctdef.das_ctdef_.index_tid_, table_schema))) {
+        } else if (OB_ISNULL(table_schema)) {
+          ret = OB_SCHEMA_ERROR;
+        } else {
+          bool has_ai_column = false;
+          for (int64_t k = 0; k < table_schema->get_column_count() && !has_ai_column; ++k) {
+            const ObColumnSchemaV2 *col = table_schema->get_column_schema_by_idx(k);
+            has_ai_column = col != NULL && col->is_ai_column();
+          }
+          if (has_ai_column) {
+            ObSqlString predicate;
+            for (int64_t k = 0; OB_SUCC(ret) && k < ins_ctdef.das_ctdef_.rowkey_cnt_; ++k) {
+              const ObColumnSchemaV2 *key_col = table_schema->get_column_schema(ins_ctdef.column_ids_.at(k));
+              ObExpr *key_expr = ins_ctdef.new_row_.at(k);
+              ObDatum *key_datum = NULL;
+              ObObj key_value;
+              char literal[4096];
+              int64_t literal_pos = 0;
+              if (OB_ISNULL(key_col) || OB_ISNULL(key_expr)) {
+                ret = OB_ERR_UNEXPECTED;
+              } else if (OB_FAIL(key_expr->eval(eval_ctx_, key_datum))) {
+              } else if (OB_ISNULL(key_datum) || key_datum->is_null()) {
+                ret = OB_INVALID_ARGUMENT;
+              } else if (OB_FAIL(key_datum->to_obj(key_value, key_expr->obj_meta_,
+                                                   key_expr->obj_datum_map_))) {
+              } else if (OB_FAIL(key_value.print_sql_literal(literal, sizeof(literal), literal_pos))) {
+              } else if (k > 0 && OB_FAIL(predicate.append(" AND "))) {
+              } else if (OB_FAIL(ObResolverUtils::append_escaped_identifier(
+                                  predicate, key_col->get_column_name_str()))) {
+              } else if (OB_FAIL(predicate.append(" = "))) {
+              } else if (OB_FAIL(predicate.append(literal, literal_pos))) {
+              }
+            }
+            if (OB_SUCC(ret) && predicate.length() > 2048) {
+              ret = OB_INVALID_ARGUMENT;
+            }
+            if (OB_SUCC(ret) && OB_FAIL(open_inner_conn())) {
+              LOG_WARN("failed to open ai task inner connection", KR(ret));
+            } else {
+              ctx_.get_das_ctx().is_ai_column_task_ = true;
+            }
+            if (OB_SUCC(ret) && OB_FAIL(begin_nested_session(false))) {
+              ctx_.get_das_ctx().is_ai_column_task_ = false;
+              LOG_WARN("failed to begin ai task nested session", KR(ret));
+            } else if (OB_SUCC(ret)) {
+              static uint64_t request_seq = 0;
+              const uint64_t request_id = ATOMIC_AAF(&request_seq, 1);
+              const int64_t request_ts = ObTimeUtility::current_time();
+              for (int64_t k = 0; OB_SUCC(ret) && k < table_schema->get_column_count(); ++k) {
+                const ObColumnSchemaV2 *col = table_schema->get_column_schema_by_idx(k);
+                if (col != NULL && col->is_ai_column()) {
+                  ObSqlString sql;
+                  if (OB_FAIL(sql.append_fmt(
+                      "INSERT INTO oceanbase.%s (task_id, table_id, column_id, rowkey_predicate, "
+                      "request_id, definition_version, state, retry_count, max_retries, eligible_ts) "
+                      "VALUES (UUID_SHORT(), %lu, %lu, ", OB_ALL_AI_COLUMN_TASK_TNAME,
+                      ObSchemaUtils::get_extract_schema_id(table_schema->get_table_id()),
+                      col->get_column_id()))) {
+                  } else if (OB_FAIL(sql_append_hex_escape_str(predicate.string(), sql))) {
+                  } else if (OB_FAIL(sql.append_fmt(
+                      ", '%ld-%lu', %ld, 0, 0, %ld, NOW(6))",
+                      request_ts, request_id,
+                      col->get_schema_version() > 0 ? col->get_schema_version()
+                                                    : table_schema->get_schema_version(),
+                      col->get_ai_max_retries()))) {
+                  } else if (OB_FAIL(execute_write(sql.ptr()))) {
+                    LOG_WARN("failed to insert ai task", KR(ret), K(sql));
+                  }
+                }
+              }
+              int end_ret = end_nested_session();
+              ctx_.get_das_ctx().is_ai_column_task_ = false;
+              if (end_ret != OB_SUCCESS) {
+                LOG_WARN("failed to end ai task nested session", KR(end_ret));
+              }
+              if (OB_SUCC(ret)) {
+                ret = end_ret;
+              }
+            }
+          }
+        }
+      }
+      if (OB_FAIL(ret) && j == 0 && ins_ctdef.is_primary_index_ &&
+          !is_sys_table(ins_ctdef.das_ctdef_.index_tid_)) {
+        LOG_WARN("ai task insertion failed", KR(ret), K(ins_ctdef.das_ctdef_.index_tid_));
       }
       if (OB_FAIL(ret)) {
         record_err_for_load_data(ret, ins_rtdef.cur_row_num_);
